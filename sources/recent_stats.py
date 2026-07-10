@@ -3,9 +3,9 @@ from __future__ import annotations
 import traceback
 from typing import Literal
 
-import nflreadpy
 import polars as pl
 
+from clients.nflreadpy_client import load_player_stats
 from contracts import ContextBlock, ResolvedContext
 
 # Stat columns rendered per position group.
@@ -46,18 +46,12 @@ def _stat_line(row: dict, cols: list[str]) -> str:
 
 
 def recent_stats(ctx: ResolvedContext, last_n: int | None = None) -> ContextBlock:
-    """
-    Fetch the full regular-season game log for ctx.player_id in ctx.season.
-
-    last_n: when set, caps output to the most recent N games (parked knob).
-    """
+    """last_n caps output to the most recent N games; unset fetches the full season."""
     source = "recent_stats"
     as_of = f"Week {ctx.week}"
 
     try:
-        df: pl.DataFrame = nflreadpy.load_player_stats(
-            seasons=ctx.season, summary_level="week"
-        )
+        df: pl.DataFrame = load_player_stats(ctx.season, summary_level="week")
 
         player_df = (
             df.filter(

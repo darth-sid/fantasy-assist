@@ -17,12 +17,23 @@ In both modes Claude flags issues in Sid's design and its own. Overreach in Buil
 making a design decision Sid reserved, or gold-plating past the spec. Implement exactly
 what's decided; when a decision is missing, ask rather than invent. One slice at a time.
 
+## Code style
+
+No huge docstrings. If a function is genuinely complicated enough to seem to need one,
+ask Sid rather than writing it.
+
 ## Current edge
 
-Structure convention decided: `sources/` + `resolution/` subfolders, everything else
-flat. `resolution/` doesn't exist yet; entity resolution is still a hardcoded stand-in
-inline in `__main__.py`. Bootstrap stat-fetching slice exists (`contracts.py`,
-`sources/recent_stats.py`).
+Structure: `sources/`, `resolution/`, and `clients/` subfolders, everything else flat.
+`clients/nflreadpy_client.py` holds all raw nflreadpy access; `sources/` and
+`resolution/` call through it rather than importing nflreadpy directly.
+
+`resolution/player_resolver.py`'s `resolve_from_player(name, season, week, scoring_format)`
+resolves a player name via `load_rosters(season)` — picking the roster row with the
+latest `week <= target week` — and returns a `ResolvedContext` directly. Raises on no
+match or on a name matching multiple distinct players (`gsis_id`s) — no silent wrong
+answers yet. Wired into `__main__.py`; only `REQUEST_PLAYER_NAME`, `REQUEST_WEEK`, and
+`REQUEST_SCORING_FORMAT` are still hardcoded there (stand-in for request parsing).
 
 Working mode: **Build** — Sid designs, Claude implements to spec.
 
@@ -52,3 +63,15 @@ The **body is authoritative** (current state); the log is provenance.
 - 2026-07-04 — Data source: nflreadpy. API surface tracked in API_CONTEXT.md, not here.
 - 2026-07-04 — Project structure: `sources/` + `resolution/` subfolders, everything else
   flat. Documented in README.md.
+- 2026-07-04 — Added `clients/` subfolder for raw nflreadpy access (both new roster
+  access and the existing player-stats call moved in); `sources/`/`resolution/` no
+  longer call nflreadpy directly.
+- 2026-07-04 — Player-name resolution rule: on a multi-team season for one player, use
+  the roster row with the latest week <= target week; on a name matching multiple
+  distinct players, raise rather than guess.
+- 2026-07-04 — Test framework: pytest, in `tests/`. Client calls mocked at the
+  `clients/` boundary; no test hits the network.
+- 2026-07-08 — Code style: no huge docstrings; ask Sid if a function seems to need one.
+- 2026-07-10 — `resolve_from_player` (renamed from `resolve_player`) returns a
+  `ResolvedContext` directly instead of an intermediate `PlayerMatch`; wired into
+  `__main__.py`, replacing the hardcoded player_id/team stand-in.

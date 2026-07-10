@@ -29,12 +29,19 @@ clears it.
 
 ## Functions currently used in this repo
 
-- `load_player_stats(seasons, summary_level="week")` — `sources/recent_stats.py`.
-  Filtered on `player_id`, `season_type == "REG"`, sorted by `week`. Columns relied on:
-  `player_id`, `season_type`, `week`, `position`, `opponent_team`, plus stat columns
+All calls now go through `clients/nflreadpy_client.py` — `sources/` and `resolution/`
+never import `nflreadpy` directly.
+
+- `load_player_stats(seasons, summary_level="week")` — used by `sources/recent_stats.py`
+  via `clients.nflreadpy_client.load_player_stats`. Filtered on `player_id`,
+  `season_type == "REG"`, sorted by `week`. Columns relied on: `player_id`,
+  `season_type`, `week`, `position`, `opponent_team`, plus stat columns
   (`completions`, `attempts`, `passing_yards`, `passing_tds`, `passing_interceptions`,
   `carries`, `rushing_yards`, `rushing_tds`, `receptions`, `targets`, `receiving_yards`,
   `receiving_tds`, `fg_made`, `fg_att`, `pat_made`).
+- `load_rosters(seasons)` — used by `resolution/player_resolver.py` via
+  `clients.nflreadpy_client.load_rosters`. Columns relied on: `full_name`, `gsis_id`,
+  `team`, `week`. See gotchas below — this is not a simple one-row-per-player table.
 
 ## Full loader surface (v0.1.5)
 
@@ -45,7 +52,7 @@ list[int]` = specific season(s), unless noted otherwise.
 |---|---|---|
 | `load_player_stats` | `(seasons=None, summary_level: "week"\|"reg"\|"post"\|"reg+post"="week")` | Main per-player stat source. |
 | `load_players` | `()` | No season arg — full player table. Cross-platform ID mappings (GSIS, PFR, PFF, OTC, ESB, ESPN). |
-| `load_rosters` | `(seasons=None)` | `True` = all data since 1920. |
+| `load_rosters` | `(seasons=None)` | `True` = all data since 1920. Not one row per player — see gotchas. |
 | `load_rosters_weekly` | `(seasons=None)` | Data from 2002+. Week-by-week roster moves, injury designations. |
 | `load_schedules` | `(seasons=True)` | Note default is `True` here (all seasons), unlike most other loaders. |
 | `load_teams` | `()` | Team metadata: abbreviations, names, colors, logos. |
@@ -76,4 +83,23 @@ list[int]` = specific season(s), unless noted otherwise.
   if we just need a rough week number without a network round-trip.
 - `config.SEASON` is currently hardcoded to `2023` rather than derived from
   `get_current_season()` — see the stand-in comment in `config.py`.
+- `load_rosters(season)` is **not** one row per player. It's one row per observed
+  roster-status change, tagged with the `week` it was observed. Most players get one
+  row for the whole season; players who were cut/traded/re-signed get one row per
+  status change, each potentially with a different `team`. Observed on 2023 data:
+  3090 rows for ~2000-ish distinct players, weeks ranging 1–22 (18 regular + playoff
+  round codes in `game_type`: `REG`/`WC`/`DIV`/`CON`/`SB`).
+- `full_name` in `load_rosters` is **not unique** — real name collisions exist (16
+  cases in the 2023 data alone, e.g. two different players both named "Lamar
+  Jackson", distinguishable only by `gsis_id`). Any name-keyed lookup must check for
+  multiple distinct `gsis_id`s per name and handle the collision explicitly rather
+  than picking one silently. `resolution/player_resolver.py` raises
+  `AmbiguousPlayerNameError` in this case.
+- `gsis_id` is the right column to use as `player_id` — format matches what
+  `sources/recent_stats.py` already expects (e.g. `"00-0036322"`).
+- Roster `status` codes seen: `ACT`, `DEV`, `CUT`, `RES`, `INA`, `TRC`, `TRD`, `EXE`,
+  `PUP`, `TRT` (and others). `resolution/player_resolver.py` currently ignores
+  `status` entirely and just picks the latest row at/before the target week — a
+  known simplification, not yet a problem in practice since same-player multi-team
+  rows didn't actually occur in the 2023 season data we tested against.
 - (Add new gotchas here as they're hit.)
