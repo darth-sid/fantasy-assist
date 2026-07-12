@@ -24,9 +24,22 @@ ask Sid rather than writing it.
 
 ## Current edge
 
-Structure: `sources/`, `resolution/`, and `clients/` subfolders, everything else flat.
-`clients/nflreadpy_client.py` holds all raw nflreadpy access; `sources/` and
-`resolution/` call through it rather than importing nflreadpy directly.
+Structure: `sources/`, `features/`, `resolution/`, and `clients/` subfolders,
+everything else flat. `clients/nflreadpy_client.py` holds all raw nflreadpy access;
+`sources/` and `resolution/` call through it rather than importing nflreadpy directly.
+
+Pipeline: `sources/*.py` implement `(ctx: ResolvedContext) -> SourceResult[T]`, where
+`T` is a rich, source-specific data type the branch defines itself (e.g.
+`sources/recent_stats.py`'s `RecentStatsData`) — branches are not forced into a
+shared text-block output beyond the `SourceResult` envelope (`source`, `status`,
+`as_of`, `data`, `error`). `features/*.py` mirrors `sources/` one module per branch
+and implements `extract(SourceResult[T]) -> FeatureVector` (`dict[str, float]`, keys
+prefixed with the source name) — this is where an LLM would live for a future
+unstructured source; `recent_stats` needs none. `feature_vector.py`'s
+`merge_features` combines each source's contribution into one `FeatureVector` per
+player, raising on key collisions. The final decision layer (a deterministic model —
+a decision tree — consuming the `FeatureVector`) isn't built yet; it needs a training
+pipeline/labeled data first.
 
 `resolution/player_resolver.py`'s `resolve_from_player(name, season, week, scoring_format)`
 resolves a player name via `load_rosters(season)` — picking the roster row with the
@@ -75,3 +88,15 @@ The **body is authoritative** (current state); the log is provenance.
 - 2026-07-10 — `resolve_from_player` (renamed from `resolve_player`) returns a
   `ResolvedContext` directly instead of an intermediate `PlayerMatch`; wired into
   `__main__.py`, replacing the hardcoded player_id/team stand-in.
+- 2026-07-11 — Sources no longer compile down to a shared `ContextBlock` LLM-prompt
+  text format; each branch exposes its own rich `SourceResult[T]` data type instead.
+  `ContextBlock` and `assembler.py` retired.
+- 2026-07-11 — Added `features/` subfolder: one module per source, turning that
+  source's `SourceResult[T]` into named numeric `FeatureVector` contributions;
+  `feature_vector.py`'s `merge_features` combines them into one vector per player,
+  raising on key collisions rather than silently overwriting.
+- 2026-07-11 — Final decision layer will be a deterministic model (e.g. a decision
+  tree) over the `FeatureVector`, not an LLM. An LLM, if used at all, stays confined
+  to a source's `features/` layer (for parsing unstructured input) and never reaches
+  the final decision. The decision-tree layer itself is out of scope until a training
+  pipeline/labeled data exist.

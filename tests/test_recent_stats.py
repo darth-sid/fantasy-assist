@@ -37,26 +37,37 @@ def test_ok_status_sorts_by_week_and_reports_all_games(monkeypatch):
     )
     monkeypatch.setattr(recent_stats_module, "load_player_stats", lambda season, summary_level: df)
 
-    block = recent_stats(CTX)
+    result = recent_stats(CTX)
 
-    assert block.status == "ok"
-    assert block.source == "recent_stats"
-    wk1_idx = block.content.index("Wk 1")
-    wk2_idx = block.content.index("Wk 2")
-    assert wk1_idx < wk2_idx
-    assert "(2 games)" in block.content
+    assert result.status == "ok"
+    assert result.source == "recent_stats"
+    assert result.data is not None
+    assert [game.week for game in result.data.games] == [1, 2]
+    assert len(result.data.games) == 2
 
 
 def test_last_n_caps_to_most_recent_games(monkeypatch):
     df = _stats_df([{"week": w} for w in range(1, 6)])
     monkeypatch.setattr(recent_stats_module, "load_player_stats", lambda season, summary_level: df)
 
-    block = recent_stats(CTX, last_n=2)
+    result = recent_stats(CTX, last_n=2)
 
-    assert "(2 games)" in block.content
-    assert "Wk 4" in block.content
-    assert "Wk 5" in block.content
-    assert "Wk 1" not in block.content
+    assert result.data is not None
+    assert [game.week for game in result.data.games] == [4, 5]
+
+
+def test_game_stats_carry_position_relevant_columns(monkeypatch):
+    df = _stats_df([{"week": 1, "receptions": 7, "targets": 9, "receiving_yards": 88, "receiving_tds": 1}])
+    monkeypatch.setattr(recent_stats_module, "load_player_stats", lambda season, summary_level: df)
+
+    result = recent_stats(CTX)
+
+    assert result.data is not None
+    assert result.data.position == "WR"
+    game = result.data.games[0]
+    assert game.opponent == "DAL"
+    assert game.stats["receptions"] == 7
+    assert game.stats["receiving_yards"] == 88
 
 
 def test_filters_out_other_players_and_non_regular_season(monkeypatch):
@@ -68,10 +79,10 @@ def test_filters_out_other_players_and_non_regular_season(monkeypatch):
     )
     monkeypatch.setattr(recent_stats_module, "load_player_stats", lambda season, summary_level: df)
 
-    block = recent_stats(CTX)
+    result = recent_stats(CTX)
 
-    assert block.status == "empty"
-    assert CTX.player_name in block.content
+    assert result.status == "empty"
+    assert result.data is None
 
 
 def test_error_status_when_fetch_raises(monkeypatch):
@@ -80,7 +91,9 @@ def test_error_status_when_fetch_raises(monkeypatch):
 
     monkeypatch.setattr(recent_stats_module, "load_player_stats", _raise)
 
-    block = recent_stats(CTX)
+    result = recent_stats(CTX)
 
-    assert block.status == "error"
-    assert "fetch failed" in block.content
+    assert result.status == "error"
+    assert result.data is None
+    assert result.error is not None
+    assert "network down" in result.error

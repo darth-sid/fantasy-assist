@@ -13,8 +13,12 @@ class ResolvedContext:
 
 
 @dataclass
-class ContextBlock:
+class SourceResult[T]:
     source: str
     status: Literal["ok", "empty", "error"]
-    content: str
     as_of: str
+    data: T | None = None
+    error: str | None = None  # populated on status="error"
+
+
+FeatureVector = dict[str, float]
