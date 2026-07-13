@@ -39,7 +39,7 @@ class RecentStatsData:
 
 
 def recent_stats(ctx: ResolvedContext, last_n: int | None = None) -> SourceResult[RecentStatsData]:
-    """last_n caps output to the most recent N games; unset fetches the full season."""
+    """Games strictly before ctx.week; last_n caps to the most recent N of those."""
     source = "recent_stats"
     as_of = f"Week {ctx.week}"
 
@@ -50,6 +50,7 @@ def recent_stats(ctx: ResolvedContext, last_n: int | None = None) -> SourceResul
             df.filter(
                 (pl.col("player_id") == ctx.player_id)
                 & (pl.col("season_type") == "REG")
+                & (pl.col("week") < ctx.week)
             )
             .sort("week")
         )
@@ -67,7 +68,10 @@ def recent_stats(ctx: ResolvedContext, last_n: int | None = None) -> SourceResul
             GameLine(
                 week=row["week"],
                 opponent=row.get("opponent_team", "?"),
-                stats={col: row[col] for col in stat_cols if row.get(col) is not None},
+                stats={
+                    **{col: row[col] for col in stat_cols if row.get(col) is not None},
+                    "fantasy_points_ppr": row["fantasy_points_ppr"],
+                },
             )
             for row in player_df.to_dicts()
         ]
