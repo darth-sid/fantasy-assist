@@ -5,6 +5,7 @@ import resolution.player_resolver as player_resolver_module
 from resolution.player_resolver import (
     AmbiguousPlayerNameError,
     PlayerNotFoundError,
+    _normalize_name,
     resolve_from_player,
 )
 
@@ -35,6 +36,36 @@ def test_lookup_is_case_and_whitespace_insensitive(monkeypatch):
     ctx = resolve_from_player("  JUSTIN jefferson  ", season=2023, week=12, scoring_format="PPR")
 
     assert ctx.player_id == "00-0036322"
+
+
+def test_lookup_collapses_internal_whitespace(monkeypatch):
+    df = _rosters(
+        [{"full_name": "Justin Jefferson", "gsis_id": "00-0036322", "team": "MIN", "week": 1}]
+    )
+    monkeypatch.setattr(player_resolver_module, "load_rosters", lambda season: df)
+
+    ctx = resolve_from_player("Justin   Jefferson", season=2023, week=12, scoring_format="PPR")
+
+    assert ctx.player_id == "00-0036322"
+
+
+def test_lookup_normalizes_curly_apostrophes(monkeypatch):
+    df = _rosters(
+        [{"full_name": "Ja'Marr Chase", "gsis_id": "00-2222222", "team": "CIN", "week": 1}]
+    )
+    monkeypatch.setattr(player_resolver_module, "load_rosters", lambda season: df)
+
+    ctx = resolve_from_player("Ja’Marr Chase", season=2023, week=12, scoring_format="PPR")
+
+    assert ctx.player_id == "00-2222222"
+
+
+def test_normalize_name_lowercases_strips_and_collapses_whitespace():
+    assert _normalize_name("  Justin   Jefferson  ") == "justin jefferson"
+
+
+def test_normalize_name_normalizes_curly_quotes():
+    assert _normalize_name("Ja’Marr Chase") == "ja'marr chase"
 
 
 def test_picks_team_as_of_target_week_across_a_trade(monkeypatch):

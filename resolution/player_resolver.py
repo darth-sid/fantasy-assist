@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import re
+
 import polars as pl
 
 from clients.nflreadpy_client import load_rosters
 from contracts import ResolvedContext
+
+_CURLY_QUOTES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
 
 
 class PlayerNotFoundError(Exception):
@@ -14,9 +18,16 @@ class AmbiguousPlayerNameError(Exception):
     """The name matches more than one distinct player (gsis_id) in that season."""
 
 
+def _normalize_name(name: str) -> str:
+    normalized = name.strip().lower().translate(_CURLY_QUOTES)
+    return re.sub(r"\s+", " ", normalized)
+
+
 def _build_name_index(rosters: pl.DataFrame) -> dict[str, pl.DataFrame]:
-    """Group roster rows by lowercased full_name."""
-    keyed = rosters.with_columns(pl.col("full_name").str.to_lowercase().alias("_name_key"))
+    """Group roster rows by normalized full_name."""
+    keyed = rosters.with_columns(
+        pl.col("full_name").map_elements(_normalize_name, return_dtype=pl.Utf8).alias("_name_key")
+    )
     partitioned = keyed.partition_by("_name_key", as_dict=True)
     return {name_key: group for (name_key,), group in partitioned.items()}
 
@@ -27,7 +38,7 @@ def resolve_from_player(name: str, season: int, week: int, scoring_format: str) 
     rosters = load_rosters(season)
     index = _build_name_index(rosters)
 
-    matches = index.get(name.strip().lower())
+    matches = index.get(_normalize_name(name))
     if matches is None:
         raise PlayerNotFoundError(f"No player found matching {name!r} in {season}.")
 
