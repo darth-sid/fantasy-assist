@@ -25,35 +25,59 @@ ask Sid rather than writing it.
 ## Current edge
 
 Structure: `sources/`, `features/`, `resolution/`, and `clients/` subfolders,
-everything else flat. `clients/nflreadpy_client.py` holds all raw nflreadpy access;
-`sources/` and `resolution/` call through it rather than importing nflreadpy directly.
+everything else flat. `clients/nflreadpy_client.py` holds all raw nflreadpy access
+and `clients/anthropic_client.py` holds all raw Anthropic SDK access; `sources/`
+and `resolution/` call through `clients/` rather than importing either library
+directly.
 
 Pipeline: `sources/*.py` implement `(ctx: ResolvedContext) -> SourceResult[T]`, where
 `T` is a rich, source-specific data type the branch defines itself (e.g.
 `sources/recent_stats.py`'s `RecentStatsData`) — branches are not forced into a
 shared text-block output beyond the `SourceResult` envelope (`source`, `status`,
-`as_of`, `data`, `error`). `features/*.py` mirrors `sources/` one module per branch
-and implements `extract(SourceResult[T]) -> FeatureVector` (`dict[str, float]`, keys
-prefixed with the source name) — this is where an LLM would live for a future
-unstructured source; `recent_stats` needs none. `feature_vector.py`'s
-`merge_features` combines each source's contribution into one `FeatureVector` per
-player, raising on key collisions. The final decision layer (a deterministic model —
-a decision tree — consuming the `FeatureVector`) isn't built yet; it needs a training
-pipeline/labeled data first.
+`as_of`, `data`, `error`). `sources/recent_stats.py` bounds games to strictly
+before `ctx.week` (was previously unbounded — a leakage bug) and stamps every
+game with a `"fantasy_points_ppr"` stat regardless of position, alongside the
+existing position-specific raw stats. `features/*.py` mirrors `sources/` one
+module per branch and implements `extract(SourceResult[T]) -> FeatureVector`
+(`dict[str, float]`, keys prefixed with the source name) — this is where an LLM
+would live for a future unstructured source; `recent_stats` needs none.
+`feature_vector.py`'s `merge_features` combines each source's contribution into
+one `FeatureVector` per player, raising on key collisions. `decision.py`'s
+`rank_players` scores each player via `predict_points` — currently a placeholder
+(`recent_stats.avg_fantasy_points_ppr`, not a trained model) that proves the
+pipeline shape; the real trained decision tree is still future work.
 
 `resolution/player_resolver.py`'s `resolve_from_player(name, season, week, scoring_format)`
 resolves a player name via `load_rosters(season)` — picking the roster row with the
 latest `week <= target week` — and returns a `ResolvedContext` directly. Raises on no
 match or on a name matching multiple distinct players (`gsis_id`s) — no silent wrong
-answers yet. Wired into `__main__.py`; only `REQUEST_PLAYER_NAME`, `REQUEST_WEEK`, and
-`REQUEST_SCORING_FORMAT` are still hardcoded there (stand-in for request parsing).
+answers yet. `resolution/request_parser.py`'s `parse_request(prompt)` turns a
+natural-language prompt into a `ParsedRequest` (player names, week, scoring format)
+via an LLM structured-extraction call (`clients/anthropic_client.py`,
+`claude-haiku-4-5`, `temperature=0`); only week/scoring_format are defaulted
+(`config.CURRENT_WEEK`, `"PPR"`) when the LLM doesn't extract them — at least one
+player name is required, raises otherwise. Both wired into `__main__.py`, which is
+now driven entirely by one natural-language `REQUEST` string.
 
 Working mode: **Build** — Sid designs, Claude implements to spec.
+
+## LLM usage
+
+Two allowed touch points, both upstream of the decision layer, never inside it:
+1. `resolution/request_parser.py` — turns the raw natural-language prompt into a
+   structured `ParsedRequest` (player names, week, scoring format).
+2. A future unstructured `features/*.py` source (e.g. parsing injury-report prose
+   into a number) — none exists yet; `recent_stats` doesn't need one.
+
+The final decision layer (`decision.py`) only ever consumes the resulting
+`FeatureVector` — it doesn't know or care whether any given feature or the
+request itself was LLM-derived.
 
 ## Data Sources
 
 Player/team/NFL data comes from **nflreadpy** (Python port of the R `nflreadr`/nflverse
-tooling; loaders return Polars DataFrames).
+tooling; loaders return Polars DataFrames). LLM calls go through
+`clients/anthropic_client.py` (Anthropic SDK).
 
 Full function signatures, config/caching behavior, and accumulated gotchas: see
 [API_CONTEXT.md](API_CONTEXT.md). Keep that file current as we learn more about the
@@ -100,3 +124,22 @@ The **body is authoritative** (current state); the log is provenance.
   to a source's `features/` layer (for parsing unstructured input) and never reaches
   the final decision. The decision-tree layer itself is out of scope until a training
   pipeline/labeled data exist.
+- 2026-07-13 — Added `decision.py` as a placeholder decision layer (`predict_points`/
+  `rank_players`) to prove the `sources` → `features` → `feature_vector` → decision
+  pipeline shape end to end, using `recent_stats.avg_fantasy_points_ppr` directly
+  rather than a trained model. The real trained decision tree is still future work.
+- 2026-07-13 — Fixed a leakage bug in `sources/recent_stats.py`: it never bounded
+  games by `ctx.week`, so "recent stats as of week W" included games at/after W.
+  Now filtered to `week < ctx.week`. Also added a universal `fantasy_points_ppr`
+  stat to every game (not position-gated), giving `features/recent_stats.py` a
+  `recent_stats.avg_fantasy_points_ppr` feature — the signal `decision.py`'s
+  placeholder uses.
+- 2026-07-17 — Request parsing is a third LLM touch point, distinct from the
+  `features/`-confined rule above (see "LLM usage"): `resolution/request_parser.py`
+  turns a natural-language prompt into a `ParsedRequest` via
+  `clients/anthropic_client.py` (`claude-haiku-4-5`, `temperature=0`, structured
+  output via `client.messages.parse()` + a Pydantic model). Only player names are
+  required from the prompt; week and scoring format default to `config.CURRENT_WEEK`
+  and `"PPR"` when not stated. `config.py` gained `CURRENT_WEEK`, the same
+  dev-pin convention as `SEASON`. `__main__.py`'s request is now one
+  natural-language string instead of the earlier comma-delimited stand-in.

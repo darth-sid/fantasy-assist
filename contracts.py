@@ -3,6 +3,14 @@ from typing import Literal
 
 
 @dataclass
+class ParsedRequest:
+    raw_prompt: str
+    player_names: list[str]
+    week: int
+    scoring_format: str
+
+
+@dataclass
 class ResolvedContext:
     player_id: str
     player_name: str
