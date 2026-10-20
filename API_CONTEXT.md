@@ -81,7 +81,7 @@ list[int]` = specific season(s), unless noted otherwise.
 
 - `get_current_week(use_date=False)` triggers a schedule load — prefer `use_date=True`
   if we just need a rough week number without a network round-trip.
-- `config.SEASON` is currently hardcoded to `2023` rather than derived from
+- `config.SEASON` is currently hardcoded to `2026` rather than derived from
   `get_current_season()` — see the stand-in comment in `config.py`.
 - `load_rosters(season)` is **not** one row per player. It's one row per observed
   roster-status change, tagged with the `week` it was observed. Most players get one
@@ -102,4 +102,15 @@ list[int]` = specific season(s), unless noted otherwise.
   `status` entirely and just picks the latest row at/before the target week — a
   known simplification, not yet a problem in practice since same-player multi-team
   rows didn't actually occur in the 2023 season data we tested against.
+- The latest week's `load_player_stats` rows can be **incomplete** until Monday
+  night games are processed. Observed 2026-10-19: Week 6 had ~911 rows vs ~1,100
+  for earlier weeks. Treat the most recent week as possibly partial.
+- `load_player_stats` has `fantasy_points` (standard) and `fantasy_points_ppr`, but
+  no half-PPR column. `fantasy_points_ppr - fantasy_points == receptions` exactly
+  (verified on every 2026 row), so half-PPR is exactly their midpoint.
+- `load_rosters` `position` is coarse: `QB`/`RB`/`WR`/`TE`/`OL`/`K`/`P`/`LS` and
+  defense `DB`/`LB`/`DL` (finer detail is in `depth_chart_position`). Name
+  collisions often cross offense/defense — 2026 has two "Justin Jefferson"s
+  (`00-0036322` MIN WR, `00-0041075` CLE LB rookie); `player_resolver.py` filters
+  to QB/RB/WR/TE/K before matching.
 - (Add new gotchas here as they're hit.)

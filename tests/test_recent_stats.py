@@ -24,6 +24,7 @@ def _stats_df(rows: list[dict]) -> pl.DataFrame:
         "targets": 0,
         "receiving_yards": 0,
         "receiving_tds": 0,
+        "fantasy_points": 0.0,
         "fantasy_points_ppr": 0.0,
     }
     return pl.DataFrame([{**base, **row} for row in rows])
@@ -71,13 +72,16 @@ def test_game_stats_carry_position_relevant_columns(monkeypatch):
     assert game.stats["receiving_yards"] == 88
 
 
-def test_game_stats_carry_fantasy_points_ppr_regardless_of_position(monkeypatch):
-    df = _stats_df([{"week": 1, "position": "QB", "fantasy_points_ppr": 21.5}])
+def test_game_stats_carry_fantasy_points_regardless_of_position(monkeypatch):
+    df = _stats_df(
+        [{"week": 1, "position": "QB", "fantasy_points": 20.5, "fantasy_points_ppr": 21.5}]
+    )
     monkeypatch.setattr(recent_stats_module, "load_player_stats", lambda season, summary_level: df)
 
     result = recent_stats(CTX)
 
     assert result.data is not None
+    assert result.data.games[0].stats["fantasy_points"] == 20.5
     assert result.data.games[0].stats["fantasy_points_ppr"] == 21.5
 
 

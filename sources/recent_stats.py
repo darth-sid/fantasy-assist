@@ -70,6 +70,7 @@ def recent_stats(ctx: ResolvedContext, last_n: int | None = None) -> SourceResul
                 opponent=row.get("opponent_team", "?"),
                 stats={
                     **{col: row[col] for col in stat_cols if row.get(col) is not None},
+                    "fantasy_points": row["fantasy_points"],
                     "fantasy_points_ppr": row["fantasy_points_ppr"],
                 },
             )

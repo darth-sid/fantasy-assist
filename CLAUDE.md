@@ -36,42 +36,65 @@ Pipeline: `sources/*.py` implement `(ctx: ResolvedContext) -> SourceResult[T]`, 
 shared text-block output beyond the `SourceResult` envelope (`source`, `status`,
 `as_of`, `data`, `error`). `sources/recent_stats.py` bounds games to strictly
 before `ctx.week` (was previously unbounded — a leakage bug) and stamps every
-game with a `"fantasy_points_ppr"` stat regardless of position, alongside the
-existing position-specific raw stats. `features/*.py` mirrors `sources/` one
+game with `"fantasy_points"` (standard) and `"fantasy_points_ppr"` regardless of
+position, alongside the existing position-specific raw stats. `features/*.py` mirrors `sources/` one
 module per branch and implements `extract(SourceResult[T]) -> FeatureVector`
-(`dict[str, float]`, keys prefixed with the source name) — this is where an LLM
-would live for a future unstructured source; `recent_stats` needs none.
+(`dict[str, float]`, keys prefixed with the source name).
 `feature_vector.py`'s `merge_features` combines each source's contribution into
 one `FeatureVector` per player, raising on key collisions. `decision.py`'s
-`rank_players` scores each player via `predict_points` — currently a placeholder
-(`recent_stats.avg_fantasy_points_ppr`, not a trained model) that proves the
-pipeline shape; the real trained decision tree is still future work.
+`rank_players` scores each player via `predict_points` — a placeholder
+(`recent_stats.avg_fantasy_points_ppr`). `features/`, `feature_vector.py`, and
+`decision.py` stay as-is and still print a ranking in `__main__.py`, but they are
+**not on the answer path**.
+
+The answer path ends in `answer.py`: `render_context(parsed, players)` turns the
+`ParsedRequest` plus each player's `(ResolvedContext, SourceResult[RecentStatsData])`
+into a text context (raw prompt, week, scoring format, then per player a
+`name (team)` header and one row per game). Each game row shows only the points
+for the request's scoring format, labeled (e.g. `fantasy_points (Half-PPR)=15.4`);
+Half-PPR is derived as the midpoint of standard and PPR, and an unrecognized
+format shows both standard and PPR, labeled. `status="empty"` and `status="error"`
+render as explicit lines (the latter including the error string) — a player never
+silently disappears. `answer(parsed, players)` sends that context to
+`clients/anthropic_client.py`'s `generate_answer` (`config.ANSWER_MODEL`,
+`temperature=0`, `messages.parse()`) and returns an `Answer` envelope
+(`contracts.py`): `answer: str` (markdown, format chosen by the LLM to fit the
+question) and `cited_doc_ids: list[str]` (always empty for now, reserved for a
+future news branch). **The LLM makes the start/sit call.**
 
 `resolution/player_resolver.py`'s `resolve_from_player(name, season, week, scoring_format)`
-resolves a player name via `load_rosters(season)` — picking the roster row with the
-latest `week <= target week` — and returns a `ResolvedContext` directly. Raises on no
+resolves a player name via `load_rosters(season)`, restricted to fantasy
+positions (QB/RB/WR/TE/K) — picking the roster row with the latest
+`week <= target week` — and returns a `ResolvedContext` directly. Raises on no
 match or on a name matching multiple distinct players (`gsis_id`s) — no silent wrong
 answers yet. `resolution/request_parser.py`'s `parse_request(prompt)` turns a
 natural-language prompt into a `ParsedRequest` (player names, week, scoring format)
 via an LLM structured-extraction call (`clients/anthropic_client.py`,
-`claude-haiku-4-5`, `temperature=0`); only week/scoring_format are defaulted
+`config.PARSER_MODEL`, `temperature=0`); only week/scoring_format are defaulted
 (`config.CURRENT_WEEK`, `"PPR"`) when the LLM doesn't extract them — at least one
 player name is required, raises otherwise. Both wired into `__main__.py`, which is
-now driven entirely by one natural-language `REQUEST` string.
+now driven entirely by one natural-language `REQUEST` string and ends by
+printing `answer.answer`.
+
+`config.py` pins `SEASON = 2026`, `CURRENT_WEEK = 7`, and the models
+`PARSER_MODEL` / `ANSWER_MODEL` (both `"claude-haiku-4-5"`).
 
 Working mode: **Build** — Sid designs, Claude implements to spec.
 
 ## LLM usage
 
-Two allowed touch points, both upstream of the decision layer, never inside it:
+Two LLM touch points, both through `clients/anthropic_client.py` at
+`temperature=0` with structured output (`messages.parse()` + a Pydantic model):
 1. `resolution/request_parser.py` — turns the raw natural-language prompt into a
    structured `ParsedRequest` (player names, week, scoring format).
-2. A future unstructured `features/*.py` source (e.g. parsing injury-report prose
-   into a number) — none exists yet; `recent_stats` doesn't need one.
+   Model: `config.PARSER_MODEL`.
+2. `answer.py` — **makes the start/sit decision.** Gets the rendered context
+   (request + per-player recent stats) and returns the `Answer` envelope.
+   Model: `config.ANSWER_MODEL`. The system prompt tells it to say plainly when a
+   player's data is missing or failed to load rather than fill the gap.
 
-The final decision layer (`decision.py`) only ever consumes the resulting
-`FeatureVector` — it doesn't know or care whether any given feature or the
-request itself was LLM-derived.
+`decision.py` is no longer the decision layer; it's a placeholder ranking that
+stays printed in `__main__.py` but doesn't feed the answer.
 
 ## Data Sources
 
@@ -119,7 +142,7 @@ The **body is authoritative** (current state); the log is provenance.
   source's `SourceResult[T]` into named numeric `FeatureVector` contributions;
   `feature_vector.py`'s `merge_features` combines them into one vector per player,
   raising on key collisions rather than silently overwriting.
-- 2026-07-11 — Final decision layer will be a deterministic model (e.g. a decision
+- [superseded] 2026-07-11 — Final decision layer will be a deterministic model (e.g. a decision
   tree) over the `FeatureVector`, not an LLM. An LLM, if used at all, stays confined
   to a source's `features/` layer (for parsing unstructured input) and never reaches
   the final decision. The decision-tree layer itself is out of scope until a training
@@ -143,3 +166,21 @@ The **body is authoritative** (current state); the log is provenance.
   and `"PPR"` when not stated. `config.py` gained `CURRENT_WEEK`, the same
   dev-pin convention as `SEASON`. `__main__.py`'s request is now one
   natural-language string instead of the earlier comma-delimited stand-in.
+- 2026-10-19 — The LLM now makes the start/sit call (`answer.py` →
+  `clients/anthropic_client.py`'s `generate_answer`). Supersedes the 2026-07-11
+  deterministic-model entry. `features/`, `feature_vector.py`, and `decision.py`
+  stay as they are but are not on the answer path.
+- 2026-10-19 — `config.SEASON`/`CURRENT_WEEK` moved to 2026 / 7.
+- 2026-10-19 — Models are configurable: `config.PARSER_MODEL` and
+  `config.ANSWER_MODEL`, both defaulting to `"claude-haiku-4-5"`;
+  `extract_request` reads `PARSER_MODEL` instead of hardcoding the model.
+- 2026-10-19 — Answer output is an envelope with a free-form body: `Answer`
+  (`answer: str` markdown, LLM picks the format; `cited_doc_ids: list[str]`,
+  always empty in v0.5, reserved for the v1 news branch). `temperature=0`.
+- 2026-10-19 — The answer context shows fantasy points for the request's scoring
+  format, labeled with that format. `sources/recent_stats.py` now also stamps
+  standard `fantasy_points`; Half-PPR is derived as `(standard + ppr) / 2`; an
+  unrecognized format falls back to showing both, labeled.
+- 2026-10-19 — Player resolution only considers fantasy roster positions
+  (QB/RB/WR/TE/K), so defensive namesakes (e.g. a CLE LB "Justin Jefferson") no
+  longer raise `AmbiguousPlayerNameError`. OL, P, LS and defense excluded.

@@ -11,7 +11,7 @@ from resolution.player_resolver import (
 
 
 def _rosters(rows: list[dict]) -> pl.DataFrame:
-    return pl.DataFrame(rows)
+    return pl.DataFrame([{"position": "WR", **row} for row in rows])
 
 
 def test_resolves_single_roster_row(monkeypatch):
@@ -112,3 +112,46 @@ def test_raises_ambiguous_for_name_collision(monkeypatch):
 
     with pytest.raises(AmbiguousPlayerNameError):
         resolve_from_player("Lamar Jackson", season=2023, week=1, scoring_format="PPR")
+
+
+def test_ignores_defensive_namesake(monkeypatch):
+    df = _rosters(
+        [
+            {"full_name": "Justin Jefferson", "gsis_id": "00-0036322", "team": "MIN", "week": 1},
+            {
+                "full_name": "Justin Jefferson",
+                "gsis_id": "00-0041075",
+                "team": "CLE",
+                "week": 1,
+                "position": "LB",
+            },
+        ]
+    )
+    monkeypatch.setattr(player_resolver_module, "load_rosters", lambda season: df)
+
+    ctx = resolve_from_player("Justin Jefferson", season=2026, week=7, scoring_format="PPR")
+
+    assert ctx.player_id == "00-0036322"
+
+
+@pytest.mark.parametrize("position", ["QB", "RB", "WR", "TE", "K"])
+def test_resolves_fantasy_positions(monkeypatch, position):
+    df = _rosters(
+        [{"full_name": "Test Player", "gsis_id": "00-1111111", "team": "TEAMA", "week": 1, "position": position}]
+    )
+    monkeypatch.setattr(player_resolver_module, "load_rosters", lambda season: df)
+
+    ctx = resolve_from_player("Test Player", season=2026, week=7, scoring_format="PPR")
+
+    assert ctx.player_id == "00-1111111"
+
+
+@pytest.mark.parametrize("position", ["OL", "DL", "LB", "DB", "P", "LS"])
+def test_raises_not_found_for_non_fantasy_position(monkeypatch, position):
+    df = _rosters(
+        [{"full_name": "Test Player", "gsis_id": "00-1111111", "team": "TEAMA", "week": 1, "position": position}]
+    )
+    monkeypatch.setattr(player_resolver_module, "load_rosters", lambda season: df)
+
+    with pytest.raises(PlayerNotFoundError):
+        resolve_from_player("Test Player", season=2026, week=7, scoring_format="PPR")

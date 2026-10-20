@@ -8,6 +8,9 @@ from clients.nflreadpy_client import load_rosters
 from contracts import ResolvedContext
 
 _CURLY_QUOTES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
+# Narrows the search to fantasy-relevant players so defensive namesakes don't
+# trigger AmbiguousPlayerNameError.
+_FANTASY_POSITIONS = ["QB", "RB", "WR", "TE", "K"]
 
 
 class PlayerNotFoundError(Exception):
@@ -35,12 +38,12 @@ def _build_name_index(rosters: pl.DataFrame) -> dict[str, pl.DataFrame]:
 def resolve_from_player(name: str, season: int, week: int, scoring_format: str) -> ResolvedContext:
     """Team is taken from the roster row with the latest week <= `week`, falling
     back to the earliest known row if none qualify."""
-    rosters = load_rosters(season)
+    rosters = load_rosters(season).filter(pl.col("position").is_in(_FANTASY_POSITIONS))
     index = _build_name_index(rosters)
 
     matches = index.get(_normalize_name(name))
     if matches is None:
-        raise PlayerNotFoundError(f"No player found matching {name!r} in {season}.")
+        raise PlayerNotFoundError(f"No fantasy-eligible player found matching {name!r} in {season}.")
 
     distinct_ids = matches["gsis_id"].unique().to_list()
     if len(distinct_ids) > 1:
