@@ -14,3 +14,7 @@ def load_player_stats(
 
 def load_rosters(season: int) -> pl.DataFrame:
     return nflreadpy.load_rosters(seasons=season)
+
+
+def load_schedules(season: int) -> pl.DataFrame:
+    return nflreadpy.load_schedules(seasons=season)

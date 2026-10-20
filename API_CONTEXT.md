@@ -42,6 +42,11 @@ never import `nflreadpy` directly.
 - `load_rosters(seasons)` — used by `resolution/player_resolver.py` via
   `clients.nflreadpy_client.load_rosters`. Columns relied on: `full_name`, `gsis_id`,
   `team`, `week`. See gotchas below — this is not a simple one-row-per-player table.
+- `load_schedules(seasons)` — used by `sources/schedule.py` via
+  `clients.nflreadpy_client.load_schedules` (always passed a single season, so the
+  all-seasons default never applies). Filtered on `game_type == "REG"` and the
+  player's team as `home_team` or `away_team`. Columns relied on: `game_type`,
+  `week`, `home_team`, `away_team`, `result`.
 
 ## Full loader surface (v0.1.5)
 
@@ -113,4 +118,17 @@ list[int]` = specific season(s), unless noted otherwise.
   collisions often cross offense/defense — 2026 has two "Justin Jefferson"s
   (`00-0036322` MIN WR, `00-0041075` CLE LB rookie); `player_resolver.py` filters
   to QB/RB/WR/TE/K before matching.
+- `load_schedules` `result` (home score minus away score) is **null for unplayed
+  games**, which is how `sources/schedule.py` sets `played`. A week before the
+  target week can still be null if the data hasn't caught up.
+- `load_player_stats` `fantasy_points` / `fantasy_points_ppr` **do not score
+  kicking**. All 184 kicker rows in 2026 (as of 2026-10-19) have
+  `fantasy_points = 0.0`. `answer.py` shows kickers' raw stats with no points.
+- `load_teams` includes historical codes like `OAK`, `SD`, and `STL`, so it should
+  not be used to derive byes (a team "missing" from a week would include defunct
+  franchises). Byes come from a team's own schedule having no game that week.
+- `sources/schedule.py` looks up the schedule by `ctx.team`, the player's team as of
+  the target week. A player traded mid-season gets past weeks matched against the
+  wrong team's schedule (e.g. "did not play" for weeks they played elsewhere).
+  Known, not yet solved.
 - (Add new gotchas here as they're hit.)

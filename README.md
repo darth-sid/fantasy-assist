@@ -12,10 +12,13 @@ context and has an LLM write the answer, including the start/sit call.
 All code lives in the `ffassistant/` package:
 
 - `sources/` — retrieval branches with the `(ctx: ResolvedContext) -> SourceResult[T]`
-  contract. One module per data source (e.g. `recent_stats.py`), each defining its
-  own rich, source-specific data type (e.g. `RecentStatsData`) as the `T` — branches
-  are not forced into a shared output shape beyond the `SourceResult` envelope
-  (`source`, `status`, `as_of`, `data`, `error`).
+  contract. One module per data source, each defining its own rich,
+  source-specific data type as the `T` — branches are not forced into a shared
+  output shape beyond the `SourceResult` envelope (`source`, `status`, `as_of`,
+  `data`, `error`). `recent_stats.py` (`RecentStatsData`) has the player's
+  per-game stats before the target week; `schedule.py` (`ScheduleData`) has the
+  player's team's opponent, home/away, and played status for each week through
+  the target week, with `None` opponent meaning bye.
 - `resolution/` — turns a raw request into resolved identifiers.
   `request_parser.py` turns a natural-language prompt into a `ParsedRequest`
   (player names, week, scoring format) via an LLM structured-extraction call
@@ -28,9 +31,13 @@ All code lives in the `ffassistant/` package:
   `sources/`/`resolution/` call through these instead of importing either
   library directly.
 - `answer.py` — the end of the pipeline. `render_context` turns the parsed request
-  and each player's `(ResolvedContext, SourceResult)` into a text context (empty
-  and errored results render as explicit lines, so no player silently drops out);
-  each game row shows fantasy points for the request's scoring format, labeled;
+  and each player's `PlayerInputs` (`ctx`, `recent_stats`, `schedule`) into a text
+  context (empty and errored results render as explicit lines, so no player
+  silently drops out). Per player it shows the target week's matchup or bye, then
+  one line per past week merging schedule and stats (bye, stats, did not play,
+  or stats pending); each stats row shows fantasy points for the request's
+  scoring format, labeled, except for kickers, whose points the source doesn't
+  score;
   `answer` sends it to the LLM and returns an `Answer` (`answer` markdown,
   `cited_doc_ids`).
 - `contracts.py` — the `ParsedRequest` / `ResolvedContext` / `SourceResult[T]` /

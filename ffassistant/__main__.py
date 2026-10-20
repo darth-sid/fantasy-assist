@@ -1,11 +1,11 @@
 from dotenv import load_dotenv
 
-from ffassistant.answer import answer
+from ffassistant.answer import PlayerInputs, answer
 from ffassistant.config import SEASON
-from ffassistant.contracts import ResolvedContext, SourceResult
 from ffassistant.resolution.player_resolver import resolve_from_player
 from ffassistant.resolution.request_parser import parse_request
-from ffassistant.sources.recent_stats import RecentStatsData, recent_stats
+from ffassistant.sources.recent_stats import recent_stats
+from ffassistant.sources.schedule import schedule
 
 load_dotenv()
 
@@ -14,11 +14,9 @@ REQUEST = "CeeDee Lamb or Justin Jefferson for Week 7? Or maybe Ja'Marr Chase?"
 # -------------------------------------------------------------------------
 
 
-def _player_inputs(
-    player_name: str, week: int, scoring_format: str
-) -> tuple[ResolvedContext, SourceResult[RecentStatsData]]:
+def _player_inputs(player_name: str, week: int, scoring_format: str) -> PlayerInputs:
     ctx = resolve_from_player(player_name, SEASON, week, scoring_format)
-    return ctx, recent_stats(ctx)
+    return PlayerInputs(ctx=ctx, recent_stats=recent_stats(ctx), schedule=schedule(ctx))
 
 
 parsed = parse_request(REQUEST)

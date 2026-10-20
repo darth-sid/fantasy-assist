@@ -43,20 +43,39 @@ before `ctx.week` (was previously unbounded — a leakage bug) and stamps every
 game with `"fantasy_points"` (standard) and `"fantasy_points_ppr"` regardless of
 position, alongside the existing position-specific raw stats.
 
-The answer path ends in `answer.py`: `render_context(parsed, players)` turns the
-`ParsedRequest` plus each player's `(ResolvedContext, SourceResult[RecentStatsData])`
-into a text context (raw prompt, week, scoring format, then per player a
-`name (team)` header and one row per game). Each game row shows only the points
-for the request's scoring format, labeled (e.g. `fantasy_points (Half-PPR)=15.4`);
-Half-PPR is derived as the midpoint of standard and PPR, and an unrecognized
-format shows both standard and PPR, labeled. `status="empty"` and `status="error"`
-render as explicit lines (the latter including the error string) — a player never
-silently disappears. `answer(parsed, players)` sends that context to
+`sources/schedule.py`'s `schedule(ctx)` returns `SourceResult[ScheduleData]`:
+`team` plus one `ScheduleWeek` (`week`, `opponent`, `home`, `played`) per week
+1..`ctx.week`, from that season's REG games involving `ctx.team`. `opponent=None`
+means bye; `played` comes from `result` being non-null. Known simplification: it
+uses the player's team as of the target week, so a player traded mid-season gets
+past weeks matched against the wrong team's schedule.
+
+The answer path ends in `answer.py`. Each player's inputs travel as a
+`PlayerInputs(ctx, recent_stats, schedule)` dataclass. `render_context(parsed, players)`
+turns the `ParsedRequest` plus a `list[PlayerInputs]` into a text context (raw
+prompt, week, scoring format, then per player a `name (team)` header). When the
+schedule loaded, the header is followed by the target week (`Week 7: vs IND`,
+`Week 7: @ BAL`, or `Week 7: BYE`), then one line per past week 1..`ctx.week - 1`
+merging schedule and stats: `Week 6: BYE`; the stats line if the team played and
+the player has a stat row; `Week 4 vs MIA: did not play` if the team played and
+the player has none; `Week 6 vs SF: game not yet played, stats pending` if the
+game has no result yet. If `recent_stats` errored while the schedule loaded, the
+error line is rendered and played weeks show `stats unavailable` instead of
+"did not play". If the schedule is `empty`/`error`, an explicit line says so
+(with the error string) and rendering falls back to stats-only lines. Each stats
+line shows only the points for the request's scoring format, labeled (e.g.
+`fantasy_points (Half-PPR)=15.4`); Half-PPR is derived as the midpoint of
+standard and PPR, and an unrecognized format shows both standard and PPR,
+labeled. Kickers (`position == "K"`) get raw stats with no points value plus one
+`fantasy points unavailable for kickers ...` line, since nflverse doesn't score
+kicking. `status="empty"` and `status="error"` render as explicit lines — a
+player never silently disappears. `answer(parsed, players)` sends that context to
 `clients/anthropic_client.py`'s `generate_answer` (`config.ANSWER_MODEL`,
 `temperature=0`, `messages.parse()`) and returns an `Answer` envelope
 (`contracts.py`): `answer: str` (markdown, format chosen by the LLM to fit the
 question) and `cited_doc_ids: list[str]` (always empty for now, reserved for a
-future news branch). **The LLM makes the start/sit call.**
+future news branch). **The LLM makes the start/sit call.** Its system prompt also
+says a player whose team is on bye in the target week cannot score that week.
 
 `resolution/player_resolver.py`'s `resolve_from_player(name, season, week, scoring_format)`
 resolves a player name via `load_rosters(season)`, restricted to fantasy
@@ -85,9 +104,10 @@ Two LLM touch points, both through `clients/anthropic_client.py` at
    structured `ParsedRequest` (player names, week, scoring format).
    Model: `config.PARSER_MODEL`.
 2. `answer.py` — **makes the start/sit decision.** Gets the rendered context
-   (request + per-player recent stats) and returns the `Answer` envelope.
+   (request + per-player schedule and recent stats) and returns the `Answer` envelope.
    Model: `config.ANSWER_MODEL`. The system prompt tells it to say plainly when a
-   player's data is missing or failed to load rather than fill the gap.
+   player's data is missing or failed to load rather than fill the gap, and that a
+   player on bye in the target week cannot score.
 
 ## Data Sources
 
@@ -184,3 +204,19 @@ The **body is authoritative** (current state); the log is provenance.
 - 2026-10-19 — Repo reorg: all code moved into an `ffassistant/` package (run with
   `python -m ffassistant`, absolute `ffassistant.` imports); `tests/` mirrors the
   package folders; docs stay at the root. Supersedes the 2026-07-04 structure entry.
+- 2026-10-19 — Added `sources/schedule.py` (`schedule(ctx) -> SourceResult[ScheduleData]`,
+  one `ScheduleWeek` per week 1..`ctx.week`, `opponent=None` = bye) and
+  `clients/nflreadpy_client.py`'s `load_schedules`. Looked up by `ctx.team`;
+  mid-season trades are a known, unsolved limitation.
+- 2026-10-19 — `answer.py` takes `PlayerInputs(ctx, recent_stats, schedule)` per player
+  instead of a `(ctx, stats_result)` tuple; `render_context`, `answer`, and
+  `__main__.py` updated.
+- 2026-10-19 — Answer context merges schedule and stats per week: target-week line
+  (`vs`/`@`/`BYE`), then per past week a bye, stats, did-not-play, or
+  stats-pending line. Schedule `empty`/`error` renders explicitly and falls back to
+  stats-only. Stats `error` with a loaded schedule keeps bye/pending lines and
+  shows played weeks as `stats unavailable`. Answer system prompt notes a player
+  on bye can't score.
+- 2026-10-19 — Kickers render raw stats with no points value plus an explicit
+  "fantasy points unavailable for kickers" line, since nflverse `fantasy_points`
+  doesn't score kicking.
