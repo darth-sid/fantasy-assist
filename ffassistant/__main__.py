@@ -1,6 +1,8 @@
+import os
+
 from dotenv import load_dotenv
 
-from ffassistant.answer import PlayerInputs, answer
+from ffassistant.answer import PlayerInputs, answer, render_context
 from ffassistant.config import SEASON
 from ffassistant.resolution.player_resolver import resolve_from_player
 from ffassistant.resolution.request_parser import parse_request
@@ -27,4 +29,9 @@ players = [
 
 print(f"Request: {parsed.raw_prompt}")
 print()
+if os.getenv("DEBUG", "").lower() == "true":
+    print("--- Answer context ---")
+    print(render_context(parsed, players))
+    print("----------------------")
+    print()
 print(answer(parsed, players).answer)

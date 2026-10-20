@@ -89,7 +89,8 @@ via an LLM structured-extraction call (`clients/anthropic_client.py`,
 (`config.CURRENT_WEEK`, `"PPR"`) when the LLM doesn't extract them — at least one
 player name is required, raises otherwise. Both wired into `__main__.py`, which is
 driven entirely by one natural-language `REQUEST` string, loads `.env` via
-`load_dotenv()`, and prints only the request and `answer.answer`.
+`load_dotenv()`, and prints the request and `answer.answer`, plus the rendered answer context
+when the `DEBUG` env var is `true` (shell or `.env`).
 
 `config.py` pins `SEASON = 2026`, `CURRENT_WEEK = 7`, and the models
 `PARSER_MODEL` / `ANSWER_MODEL` (both `"claude-haiku-4-5"`).
@@ -220,3 +221,5 @@ The **body is authoritative** (current state); the log is provenance.
 - 2026-10-19 — Kickers render raw stats with no points value plus an explicit
   "fantasy points unavailable for kickers" line, since nflverse `fantasy_points`
   doesn't score kicking.
+- 2026-10-19 — `DEBUG=true` (env var or `.env`) makes `__main__.py` print the
+  rendered answer context before the answer.
