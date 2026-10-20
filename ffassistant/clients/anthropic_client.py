@@ -3,7 +3,7 @@ from __future__ import annotations
 import anthropic
 from pydantic import BaseModel
 
-from config import ANSWER_MODEL, PARSER_MODEL
+from ffassistant.config import ANSWER_MODEL, PARSER_MODEL
 
 _SYSTEM_PROMPT = """Extract a fantasy football request from the user's message.
 

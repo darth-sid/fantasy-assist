@@ -1,8 +1,8 @@
-import answer as answer_module
-from answer import answer, render_context
-from clients.anthropic_client import GeneratedAnswer
-from contracts import Answer, ParsedRequest, ResolvedContext, SourceResult
-from sources.recent_stats import GameLine, RecentStatsData
+import ffassistant.answer as answer_module
+from ffassistant.answer import answer, render_context
+from ffassistant.clients.anthropic_client import GeneratedAnswer
+from ffassistant.contracts import Answer, ParsedRequest, ResolvedContext, SourceResult
+from ffassistant.sources.recent_stats import GameLine, RecentStatsData
 
 
 def _parsed() -> ParsedRequest:

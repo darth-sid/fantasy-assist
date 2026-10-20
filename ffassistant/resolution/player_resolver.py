@@ -4,8 +4,8 @@ import re
 
 import polars as pl
 
-from clients.nflreadpy_client import load_rosters
-from contracts import ResolvedContext
+from ffassistant.clients.nflreadpy_client import load_rosters
+from ffassistant.contracts import ResolvedContext
 
 _CURLY_QUOTES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
 # Narrows the search to fantasy-relevant players so defensive namesakes don't

@@ -33,6 +33,3 @@ class SourceResult[T]:
 class Answer:
     answer: str  # markdown
     cited_doc_ids: list[str]
-
-
-FeatureVector = dict[str, float]

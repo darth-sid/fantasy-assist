@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from clients.anthropic_client import generate_answer
-from contracts import Answer, ParsedRequest, ResolvedContext, SourceResult
-from sources.recent_stats import RecentStatsData
+from ffassistant.clients.anthropic_client import generate_answer
+from ffassistant.contracts import Answer, ParsedRequest, ResolvedContext, SourceResult
+from ffassistant.sources.recent_stats import RecentStatsData
 
 _POINTS_KEYS = ("fantasy_points", "fantasy_points_ppr")
 

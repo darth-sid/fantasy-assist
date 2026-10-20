@@ -1,9 +1,9 @@
 import pytest
 
-import resolution.request_parser as request_parser_module
-from clients.anthropic_client import ExtractedRequest
-from config import CURRENT_WEEK
-from resolution.request_parser import NoPlayersFoundError, parse_request
+import ffassistant.resolution.request_parser as request_parser_module
+from ffassistant.clients.anthropic_client import ExtractedRequest
+from ffassistant.config import CURRENT_WEEK
+from ffassistant.resolution.request_parser import NoPlayersFoundError, parse_request
 
 
 def test_explicit_values_pass_through_unchanged(monkeypatch):

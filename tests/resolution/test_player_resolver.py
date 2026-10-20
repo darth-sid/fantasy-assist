@@ -1,8 +1,8 @@
 import polars as pl
 import pytest
 
-import resolution.player_resolver as player_resolver_module
-from resolution.player_resolver import (
+import ffassistant.resolution.player_resolver as player_resolver_module
+from ffassistant.resolution.player_resolver import (
     AmbiguousPlayerNameError,
     PlayerNotFoundError,
     _normalize_name,

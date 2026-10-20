@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from clients.anthropic_client import extract_request
-from config import CURRENT_WEEK, DEFAULT_SCORING_FORMAT
-from contracts import ParsedRequest
+from ffassistant.clients.anthropic_client import extract_request
+from ffassistant.config import CURRENT_WEEK, DEFAULT_SCORING_FORMAT
+from ffassistant.contracts import ParsedRequest
 
 
 class NoPlayersFoundError(Exception):

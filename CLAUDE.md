@@ -24,8 +24,12 @@ ask Sid rather than writing it.
 
 ## Current edge
 
-Structure: `sources/`, `features/`, `resolution/`, and `clients/` subfolders,
-everything else flat. `clients/nflreadpy_client.py` holds all raw nflreadpy access
+Structure: all code lives in the `ffassistant/` package (run with
+`python -m ffassistant`; imports are absolute, `from ffassistant.x import ...`).
+Inside it: `sources/`, `resolution/`, and `clients/` subfolders, everything else
+flat. `tests/` mirrors the package's folders (`tests/sources/`,
+`tests/resolution/`, top-level modules at `tests/`). Paths below are relative to
+`ffassistant/`. `clients/nflreadpy_client.py` holds all raw nflreadpy access
 and `clients/anthropic_client.py` holds all raw Anthropic SDK access; `sources/`
 and `resolution/` call through `clients/` rather than importing either library
 directly.
@@ -37,15 +41,7 @@ shared text-block output beyond the `SourceResult` envelope (`source`, `status`,
 `as_of`, `data`, `error`). `sources/recent_stats.py` bounds games to strictly
 before `ctx.week` (was previously unbounded — a leakage bug) and stamps every
 game with `"fantasy_points"` (standard) and `"fantasy_points_ppr"` regardless of
-position, alongside the existing position-specific raw stats. `features/*.py` mirrors `sources/` one
-module per branch and implements `extract(SourceResult[T]) -> FeatureVector`
-(`dict[str, float]`, keys prefixed with the source name).
-`feature_vector.py`'s `merge_features` combines each source's contribution into
-one `FeatureVector` per player, raising on key collisions. `decision.py`'s
-`rank_players` scores each player via `predict_points` — a placeholder
-(`recent_stats.avg_fantasy_points_ppr`). `features/`, `feature_vector.py`, and
-`decision.py` stay as-is and still print a ranking in `__main__.py`, but they are
-**not on the answer path**.
+position, alongside the existing position-specific raw stats.
 
 The answer path ends in `answer.py`: `render_context(parsed, players)` turns the
 `ParsedRequest` plus each player's `(ResolvedContext, SourceResult[RecentStatsData])`
@@ -73,8 +69,8 @@ via an LLM structured-extraction call (`clients/anthropic_client.py`,
 `config.PARSER_MODEL`, `temperature=0`); only week/scoring_format are defaulted
 (`config.CURRENT_WEEK`, `"PPR"`) when the LLM doesn't extract them — at least one
 player name is required, raises otherwise. Both wired into `__main__.py`, which is
-now driven entirely by one natural-language `REQUEST` string and ends by
-printing `answer.answer`.
+driven entirely by one natural-language `REQUEST` string, loads `.env` via
+`load_dotenv()`, and prints only the request and `answer.answer`.
 
 `config.py` pins `SEASON = 2026`, `CURRENT_WEEK = 7`, and the models
 `PARSER_MODEL` / `ANSWER_MODEL` (both `"claude-haiku-4-5"`).
@@ -92,9 +88,6 @@ Two LLM touch points, both through `clients/anthropic_client.py` at
    (request + per-player recent stats) and returns the `Answer` envelope.
    Model: `config.ANSWER_MODEL`. The system prompt tells it to say plainly when a
    player's data is missing or failed to load rather than fill the gap.
-
-`decision.py` is no longer the decision layer; it's a placeholder ranking that
-stays printed in `__main__.py` but doesn't feed the answer.
 
 ## Data Sources
 
@@ -121,7 +114,7 @@ The **body is authoritative** (current state); the log is provenance.
 - 2026-07-04 — Build mode for now (Sid designs close-to-code, Claude implements to spec);
   project default is Review mode.
 - 2026-07-04 — Data source: nflreadpy. API surface tracked in API_CONTEXT.md, not here.
-- 2026-07-04 — Project structure: `sources/` + `resolution/` subfolders, everything else
+- [superseded] 2026-07-04 — Project structure: `sources/` + `resolution/` subfolders, everything else
   flat. Documented in README.md.
 - 2026-07-04 — Added `clients/` subfolder for raw nflreadpy access (both new roster
   access and the existing player-stats call moved in); `sources/`/`resolution/` no
@@ -138,7 +131,7 @@ The **body is authoritative** (current state); the log is provenance.
 - 2026-07-11 — Sources no longer compile down to a shared `ContextBlock` LLM-prompt
   text format; each branch exposes its own rich `SourceResult[T]` data type instead.
   `ContextBlock` and `assembler.py` retired.
-- 2026-07-11 — Added `features/` subfolder: one module per source, turning that
+- [superseded] 2026-07-11 — Added `features/` subfolder: one module per source, turning that
   source's `SourceResult[T]` into named numeric `FeatureVector` contributions;
   `feature_vector.py`'s `merge_features` combines them into one vector per player,
   raising on key collisions rather than silently overwriting.
@@ -147,7 +140,7 @@ The **body is authoritative** (current state); the log is provenance.
   to a source's `features/` layer (for parsing unstructured input) and never reaches
   the final decision. The decision-tree layer itself is out of scope until a training
   pipeline/labeled data exist.
-- 2026-07-13 — Added `decision.py` as a placeholder decision layer (`predict_points`/
+- [superseded] 2026-07-13 — Added `decision.py` as a placeholder decision layer (`predict_points`/
   `rank_players`) to prove the `sources` → `features` → `feature_vector` → decision
   pipeline shape end to end, using `recent_stats.avg_fantasy_points_ppr` directly
   rather than a trained model. The real trained decision tree is still future work.
@@ -184,3 +177,10 @@ The **body is authoritative** (current state); the log is provenance.
 - 2026-10-19 — Player resolution only considers fantasy roster positions
   (QB/RB/WR/TE/K), so defensive namesakes (e.g. a CLE LB "Justin Jefferson") no
   longer raise `AmbiguousPlayerNameError`. OL, P, LS and defense excluded.
+- 2026-10-19 — Deleted the off-path ranking: `features/`, `feature_vector.py`,
+  `decision.py`, their tests, and the `FeatureVector` alias. `__main__.py` no
+  longer prints a ranking. Supersedes the 2026-07-11 `features/` and 2026-07-13
+  `decision.py` entries.
+- 2026-10-19 — Repo reorg: all code moved into an `ffassistant/` package (run with
+  `python -m ffassistant`, absolute `ffassistant.` imports); `tests/` mirrors the
+  package folders; docs stay at the root. Supersedes the 2026-07-04 structure entry.
