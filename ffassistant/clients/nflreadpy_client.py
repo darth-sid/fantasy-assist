@@ -18,3 +18,12 @@ def load_rosters(season: int) -> pl.DataFrame:
 
 def load_schedules(season: int) -> pl.DataFrame:
     return nflreadpy.load_schedules(seasons=season)
+
+
+def load_injuries(season: int) -> pl.DataFrame:
+    return nflreadpy.load_injuries(seasons=season)
+
+
+def get_current_week() -> int:
+    # Schedule-based; use_date=True assumes a first-Thursday-of-September kickoff and is wrong for 2026.
+    return nflreadpy.get_current_week()

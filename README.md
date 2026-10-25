@@ -48,11 +48,15 @@ All code lives in the `ffassistant/` package:
     team's opponent, home/away, and played status for each week through the
     target week, with `None` opponent meaning bye; `defense.py` (`DefenseData`)
     has the league table of fantasy points each defense allowed per game to
-    the player's position before the target week.
+    the player's position before the target week; `injuries.py`
+    (`InjuryData`) has the player's injury report entry for the target week,
+    or whether the team's report isn't out yet.
   - `context.py` — `render_context` turns the `ValidatedRequest` and each
     player's `PlayerInputs` into a text context: the request header, a line per
     unresolved mention, then per player an "Interpreted as" line when the
-    mention differs from the roster name, the target week's opponent or bye,
+    mention differs from the roster name, the roster status when it isn't
+    active (e.g. reserve list), the target week's injury report designation,
+    the target week's opponent or bye,
     the opponent's points allowed to the player's position with a league rank,
     and one line per past week merging schedule and stats. Empty and errored
     results render as explicit lines, so no player silently drops out.
@@ -63,17 +67,21 @@ All code lives in the `ffassistant/` package:
   dependency is actually called. `nflreadpy_client.py` (nflreadpy) and
   `anthropic_client.py` (one generic structured-output call; prompts and output
   schemas live in the stages).
-- `config.py` — dev-time static pins (`SEASON`, `CURRENT_WEEK`), the
+- `config.py` — the dev-time `SEASON` pin (the current week comes from the
+  schedule at run time), the
   `DEFAULT_SCORING_FORMAT`, and the `PARSER_MODEL` / `ANSWER_MODEL` choices.
-- `__main__.py` — orchestration only: a natural-language `REQUEST` → extract →
-  validate → answer. A rejected request prints its errors and exits non-zero.
+- `__main__.py` — orchestration only: a natural-language request (the first
+  command-line argument, or the hardcoded `REQUEST`) → extract → validate →
+  answer. A rejected request prints its errors and exits non-zero.
 
 `tests/` is a pytest suite mirroring the package folders (`tests/resolution/`,
 `tests/answering/`, `tests/answering/sources/`). Client calls are mocked at the `clients/` boundary —
 no test hits the network.
 
-Run tests with `pytest` from the repo root. Run the pipeline with
-`python -m ffassistant` from the repo root; it needs Anthropic API credentials:
+Run tests with `pytest` from the repo root. Run the pipeline from the repo root
+with `python -m ffassistant "Lamb or Jefferson this week?"` (no argument falls
+back to the hardcoded `REQUEST`; `DEBUG=true` prints the resolution stage,
+prompt-cache usage, and the answer context). It needs Anthropic API credentials:
 `ANTHROPIC_API_KEY` in a `.env` at the repo root (loaded by `__main__.py`), in the
 environment, or an `ant auth login` profile.
 

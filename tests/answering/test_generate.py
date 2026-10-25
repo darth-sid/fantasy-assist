@@ -1,6 +1,7 @@
 import ffassistant.answering.generate as generate_module
 from ffassistant.answering.generate import GeneratedAnswer, answer
 from ffassistant.answering.models import Answer, PlayerInputs, ResolvedContext, SourceResult
+from ffassistant.clients.anthropic_client import StructuredResponse
 from ffassistant.resolution.models import ValidatedRequest, ValidPlayer
 
 
@@ -25,6 +26,7 @@ def test_answer_runs_sources_and_returns_generated_output(monkeypatch):
         player_name="CeeDee Lamb",
         team="DAL",
         position="WR",
+        roster_status="ACT",
         season=2026,
         week=7,
         scoring_format="PPR",
@@ -34,12 +36,15 @@ def test_answer_runs_sources_and_returns_generated_output(monkeypatch):
 
     def fake_parse_structured(model, system, user_content, output_model, max_tokens):
         seen["context"] = user_content
-        return GeneratedAnswer(answer="Start **Lamb**.", cited_doc_ids=[])
+        return StructuredResponse(
+            parsed=GeneratedAnswer(answer="Start **Lamb**.", cited_doc_ids=[]), usage=None
+        )
 
     monkeypatch.setattr(generate_module, "player_context", lambda player, season, week, fmt: ctx)
     monkeypatch.setattr(generate_module, "recent_stats", lambda ctx: empty("recent_stats"))
     monkeypatch.setattr(generate_module, "schedule", lambda ctx: empty("schedule"))
     monkeypatch.setattr(generate_module, "defense", lambda ctx: empty("defense"))
+    monkeypatch.setattr(generate_module, "injuries", lambda ctx: empty("injuries"))
     monkeypatch.setattr(generate_module, "parse_structured", fake_parse_structured)
 
     result = answer(_validated())
@@ -49,6 +54,7 @@ def test_answer_runs_sources_and_returns_generated_output(monkeypatch):
         recent_stats=empty("recent_stats"),
         schedule=empty("schedule"),
         defense=empty("defense"),
+        injuries=empty("injuries"),
     )
     assert result == Answer(answer="Start **Lamb**.", cited_doc_ids=[])
     assert seen["context"] == generate_module.render_context(_validated(), [inputs])

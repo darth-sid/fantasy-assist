@@ -6,6 +6,7 @@ from ffassistant.answering.context import render_context
 from ffassistant.answering.models import Answer, PlayerInputs
 from ffassistant.answering.player_context import player_context
 from ffassistant.answering.sources.defense import defense
+from ffassistant.answering.sources.injuries import injuries
 from ffassistant.answering.sources.recent_stats import recent_stats
 from ffassistant.answering.sources.schedule import schedule
 from ffassistant.clients.anthropic_client import parse_structured
@@ -20,6 +21,8 @@ _SYSTEM_PROMPT = """Answer the user's fantasy football question using only the p
 - If a player's data is missing or failed to load, say so plainly for that
   player. Don't fill the gap with outside knowledge or guesses.
 - A player whose team is on BYE in the target week cannot score that week.
+- A player marked Out, or on a reserve or PUP list, will not play. Doubtful
+  means unlikely to play; Questionable means uncertain.
 - The matchup rank is one input among several. Don't let it outweigh a player's
   own usage and production.
 - Mention any player the context says could not be resolved, and any
@@ -41,7 +44,11 @@ def gather_inputs(validated: ValidatedRequest) -> list[PlayerInputs]:
         )
         inputs.append(
             PlayerInputs(
-                ctx=ctx, recent_stats=recent_stats(ctx), schedule=schedule(ctx), defense=defense(ctx)
+                ctx=ctx,
+                recent_stats=recent_stats(ctx),
+                schedule=schedule(ctx),
+                defense=defense(ctx),
+                injuries=injuries(ctx),
             )
         )
     return inputs
@@ -60,5 +67,5 @@ def answer(validated: ValidatedRequest, debug: bool = False) -> Answer:
         user_content=context,
         output_model=GeneratedAnswer,
         max_tokens=2048,
-    )
+    ).parsed
     return Answer(answer=generated.answer, cited_doc_ids=generated.cited_doc_ids)

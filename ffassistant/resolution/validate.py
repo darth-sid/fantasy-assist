@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import get_args
 
-from ffassistant.config import CURRENT_WEEK, DEFAULT_SCORING_FORMAT, SEASON
+from ffassistant.config import DEFAULT_SCORING_FORMAT, SEASON
 from ffassistant.resolution.models import (
     ExtractedRequest,
     RejectedMention,
@@ -16,12 +16,14 @@ from ffassistant.resolution.roster import load_fantasy_roster
 _SCORING_FORMATS = get_args(ScoringFormat)
 
 
-def validate(extracted: ExtractedRequest, raw_prompt: str) -> ValidatedRequest:
+def validate(
+    extracted: ExtractedRequest, raw_prompt: str, current_week: int
+) -> ValidatedRequest:
     errors = []
     if not extracted.players:
         errors.append("no players found in the request")
 
-    week = extracted.week if extracted.week is not None else CURRENT_WEEK
+    week = extracted.week if extracted.week is not None else current_week
     if not 1 <= week <= 18:
         errors.append(f"week {week} is outside the regular season (1 to 18)")
 

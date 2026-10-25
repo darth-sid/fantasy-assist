@@ -10,7 +10,9 @@ PLAYER = ValidPlayer(
 
 
 def _rosters(rows: list[dict]) -> pl.DataFrame:
-    return pl.DataFrame([{"position": "QB", "full_name": "Kirk Cousins", **row} for row in rows])
+    return pl.DataFrame(
+        [{"position": "QB", "full_name": "Kirk Cousins", "status": "ACT", **row} for row in rows]
+    )
 
 
 def _patch(monkeypatch, df):
@@ -26,6 +28,7 @@ def test_builds_context_from_valid_player(monkeypatch):
     assert ctx.player_name == "Kirk Cousins"
     assert ctx.position == "QB"
     assert ctx.team == "ATL"
+    assert ctx.roster_status == "ACT"
     assert (ctx.season, ctx.week, ctx.scoring_format) == (2026, 7, "Half-PPR")
 
 
@@ -60,3 +63,20 @@ def test_falls_back_to_earliest_row_when_none_before_target_week(monkeypatch):
     )
 
     assert player_context(PLAYER, 2026, 3, "PPR").team == "MIN"
+
+
+def test_roster_status_comes_from_target_week_row(monkeypatch):
+    _patch(
+        monkeypatch,
+        _rosters(
+            [
+                {"gsis_id": "00-0031408", "team": "ATL", "week": 1, "status": "ACT"},
+                {"gsis_id": "00-0031408", "team": "ATL", "week": 6, "status": "RES"},
+                {"gsis_id": "00-0031408", "team": "ATL", "week": 10, "status": "ACT"},
+            ]
+        ),
+    )
+
+    assert player_context(PLAYER, 2026, 5, "PPR").roster_status == "ACT"
+    assert player_context(PLAYER, 2026, 7, "PPR").roster_status == "RES"
+    assert player_context(PLAYER, 2026, 10, "PPR").roster_status == "ACT"

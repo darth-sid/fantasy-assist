@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     # The sources import ResolvedContext/SourceResult from here, so a runtime import would be circular.
     from ffassistant.answering.sources.defense import DefenseData
+    from ffassistant.answering.sources.injuries import InjuryData
     from ffassistant.answering.sources.recent_stats import RecentStatsData
     from ffassistant.answering.sources.schedule import ScheduleData
 
@@ -16,6 +17,7 @@ class ResolvedContext:
     player_name: str
     team: str
     position: str
+    roster_status: str
     season: int
     week: int
     scoring_format: str  # "PPR", "Standard", or "Half-PPR"
@@ -36,6 +38,7 @@ class PlayerInputs:
     recent_stats: SourceResult[RecentStatsData]
     schedule: SourceResult[ScheduleData]
     defense: SourceResult[DefenseData]
+    injuries: SourceResult[InjuryData]
 
 
 @dataclass

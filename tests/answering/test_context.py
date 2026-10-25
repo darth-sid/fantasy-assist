@@ -1,6 +1,7 @@
 from ffassistant.answering.context import render_context
 from ffassistant.answering.models import PlayerInputs, ResolvedContext, SourceResult
 from ffassistant.answering.sources.defense import DefenseData, DefenseRow
+from ffassistant.answering.sources.injuries import InjuryData, InjuryEntry
 from ffassistant.answering.sources.recent_stats import GameLine, RecentStatsData
 from ffassistant.answering.sources.schedule import ScheduleData, ScheduleWeek
 from ffassistant.resolution.models import RejectedMention, ValidatedRequest, ValidPlayer
@@ -38,12 +39,19 @@ def _render(
     return render_context(_validated(players, mentions, rejected), players)
 
 
-def _ctx(name: str, team: str, scoring_format: str = "PPR", position: str = "WR") -> ResolvedContext:
+def _ctx(
+    name: str,
+    team: str,
+    scoring_format: str = "PPR",
+    position: str = "WR",
+    roster_status: str = "ACT",
+) -> ResolvedContext:
     return ResolvedContext(
         player_id=f"id-{name}",
         player_name=name,
         team=team,
         position=position,
+        roster_status=roster_status,
         season=2026,
         week=7,
         scoring_format=scoring_format,
@@ -104,17 +112,25 @@ def _defense_result(rows: list[DefenseRow] | None = None) -> SourceResult[Defens
     )
 
 
+def _injury_result(entry: InjuryEntry | None = None) -> SourceResult[InjuryData]:
+    return SourceResult(
+        source="injuries", status="ok", as_of="Week 7", data=InjuryData(week=7, entry=entry)
+    )
+
+
 def _inputs(
     ctx: ResolvedContext,
     stats: SourceResult[RecentStatsData],
     sched: SourceResult[ScheduleData] | None = None,
     defense: SourceResult[DefenseData] | None = None,
+    injuries: SourceResult[InjuryData] | None = None,
 ) -> PlayerInputs:
     return PlayerInputs(
         ctx=ctx,
         recent_stats=stats,
         schedule=sched if sched is not None else _schedule_result(),
         defense=defense if defense is not None else _defense_result(),
+        injuries=injuries if injuries is not None else _injury_result(),
     )
 
 
@@ -235,12 +251,13 @@ def test_target_week_bye():
     assert "Week 7: BYE" in context.splitlines()
 
 
-def test_target_week_line_follows_header():
+def test_target_week_line_follows_header_and_injury_line():
     context = _render([_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result())])
 
     lines = context.splitlines()
     header = lines.index("## CeeDee Lamb (DAL)")
-    assert lines[header + 1] == "Week 7: vs IND"
+    assert lines[header + 1] == "Not on the Week 7 injury report"
+    assert lines[header + 2] == "Week 7: vs IND"
 
 
 def test_past_bye_week_line():
@@ -252,7 +269,7 @@ def test_past_bye_week_line():
 def test_played_week_without_stat_row_is_did_not_play():
     context = _render([_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result())])
 
-    assert "Week 4 vs MIA: did not play" in context.splitlines()
+    assert "Week 4 @ MIA: did not play" in context.splitlines()
 
 
 def test_unplayed_past_week_is_stats_pending():
@@ -280,7 +297,7 @@ def test_stats_error_with_schedule_keeps_schedule_lines():
     lines = context.splitlines()
     assert "recent_stats failed to load: HTTPError: 503" in lines
     assert "Week 6: BYE" in lines
-    assert "Week 4 vs MIA: stats unavailable" in lines
+    assert "Week 4 @ MIA: stats unavailable" in lines
     assert not any("did not play" in line for line in lines)
 
 
@@ -446,3 +463,140 @@ def test_no_interpreted_line_when_mention_matches_after_normalizing():
     context = _render(players, mentions={"Ja'Marr Chase": "  ja’marr   CHASE "})
 
     assert "Interpreted" not in context
+
+
+def _player_lines(inputs: PlayerInputs) -> list[str]:
+    return _render([inputs]).splitlines()
+
+
+def test_no_roster_status_line_when_active():
+    lines = _player_lines(_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result()))
+
+    assert not any(line.startswith("Roster status") for line in lines)
+
+
+def test_known_roster_status_line_follows_interpreted_line():
+    players = [_inputs(_ctx("Davante Adams", "LA", roster_status="RES"), _ok_result())]
+
+    lines = _render(players, mentions={"Davante Adams": "Davante"}).splitlines()
+
+    header = lines.index("## Davante Adams (LA)")
+    assert lines[header + 1] == 'Interpreted "Davante" as Davante Adams (LA WR)'
+    assert lines[header + 2] == "Roster status: RES (reserve list, not available to play)"
+    assert lines[header + 3] == "Not on the Week 7 injury report"
+
+
+def test_unknown_roster_status_code():
+    lines = _player_lines(_inputs(_ctx("CeeDee Lamb", "DAL", roster_status="EXE"), _ok_result()))
+
+    assert "Roster status: EXE (unrecognized status code)" in lines
+
+
+def _injury_line(injuries: SourceResult[InjuryData]) -> str:
+    lines = _player_lines(_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result(), injuries=injuries))
+    return lines[lines.index("## CeeDee Lamb (DAL)") + 1]
+
+
+def test_injury_line_with_designation():
+    entry = InjuryEntry(
+        report_status="Questionable",
+        primary_injury="Groin",
+        practice_status="Limited Participation in Practice",
+    )
+
+    assert _injury_line(_injury_result(entry)) == (
+        "Injury report (Week 7): Questionable (Groin). Practice: Limited Participation in Practice"
+    )
+
+
+def test_injury_line_listed_without_designation():
+    entry = InjuryEntry(
+        report_status=None, primary_injury=None, practice_status="Full Participation in Practice"
+    )
+
+    assert _injury_line(_injury_result(entry)) == (
+        "Injury report (Week 7): no game designation. Practice: Full Participation in Practice"
+    )
+
+
+def test_injury_line_omits_null_injury_and_practice():
+    entry = InjuryEntry(report_status="Out", primary_injury=None, practice_status=None)
+
+    assert _injury_line(_injury_result(entry)) == "Injury report (Week 7): Out"
+
+
+def test_injury_line_omits_null_practice_only():
+    entry = InjuryEntry(report_status="Doubtful", primary_injury="Ankle", practice_status=None)
+
+    assert _injury_line(_injury_result(entry)) == "Injury report (Week 7): Doubtful (Ankle)"
+
+
+def test_injury_line_not_on_report():
+    assert _injury_line(_injury_result(None)) == "Not on the Week 7 injury report"
+
+
+def test_injury_line_empty():
+    empty = SourceResult(source="injuries", status="empty", as_of="Week 7")
+
+    assert _injury_line(empty) == "Week 7 injury report not available yet"
+
+
+def test_injury_line_error():
+    error = SourceResult(source="injuries", status="error", as_of="Week 7", error="HTTPError: 503")
+
+    assert _injury_line(error) == "Week 7 injury report failed to load: HTTPError: 503"
+
+
+def test_no_injury_line_on_bye():
+    sched = _schedule_result(ScheduleWeek(week=7, opponent=None, home=None, played=False))
+    empty = SourceResult(source="injuries", status="empty", as_of="Week 7")
+
+    lines = _player_lines(_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result(), sched, injuries=empty))
+
+    assert not any("injury report" in line.lower() for line in lines)
+
+
+def _past_week_lines(*replacements: ScheduleWeek, stats=None) -> list[str]:
+    sched = _schedule_result(*replacements)
+    return _player_lines(_inputs(_ctx("CeeDee Lamb", "DAL"), stats or _ok_result(), sched))
+
+
+def test_stats_line_home_and_away():
+    lines = _past_week_lines()
+
+    assert any(line.startswith("Week 1 vs NYG: ") for line in lines)
+    assert any(line.startswith("Week 2 @ PHI: ") for line in lines)
+
+
+def test_did_not_play_home_and_away():
+    lines = _past_week_lines()
+
+    assert "Week 3 vs CHI: did not play" in lines
+    assert "Week 4 @ MIA: did not play" in lines
+
+
+def test_stats_pending_home_and_away():
+    lines = _past_week_lines(
+        ScheduleWeek(week=4, opponent="MIA", home=False, played=False),
+        ScheduleWeek(week=5, opponent="GB", home=True, played=False),
+    )
+
+    assert "Week 4 @ MIA: game not yet played, stats pending" in lines
+    assert "Week 5 vs GB: game not yet played, stats pending" in lines
+
+
+def test_stats_unavailable_home_and_away():
+    error = SourceResult(source="recent_stats", status="error", as_of="Week 7", error="boom")
+
+    lines = _past_week_lines(stats=error)
+
+    assert "Week 3 vs CHI: stats unavailable" in lines
+    assert "Week 4 @ MIA: stats unavailable" in lines
+
+
+def test_stats_lines_fall_back_to_vs_when_schedule_fails():
+    sched_error = SourceResult(source="schedule", status="error", as_of="Week 7", error="boom")
+
+    lines = _player_lines(_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result(), sched_error))
+
+    assert any(line.startswith("Week 2 vs PHI: ") for line in lines)

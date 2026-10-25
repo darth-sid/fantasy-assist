@@ -4,6 +4,7 @@ import re
 
 from ffassistant.answering.models import PlayerInputs, ResolvedContext, SourceResult
 from ffassistant.answering.sources.defense import DefenseData
+from ffassistant.answering.sources.injuries import InjuryData
 from ffassistant.answering.sources.recent_stats import GameLine, RecentStatsData
 from ffassistant.answering.sources.schedule import ScheduleData, ScheduleWeek
 from ffassistant.resolution.models import ValidatedRequest
@@ -12,6 +13,14 @@ _POINTS_KEYS = ("fantasy_points", "fantasy_points_ppr")
 _KICKER_LINE = "fantasy points unavailable for kickers (kicking is not scored in the source data)"
 _KICKER_MATCHUP_LINE = "Matchup unavailable for kickers (kicking is not scored in the source data)"
 _MATCHUP_CAVEAT = "Points allowed is a small early-season sample and is not adjusted for opponents faced."
+_ROSTER_STATUS_MEANINGS = {
+    "RES": "reserve list, not available to play",
+    "INA": "inactive",
+    "PUP": "physically unable to perform list, not available to play",
+    "CUT": "released",
+    "DEV": "practice squad",
+    "RET": "retired",
+}
 _CURLY_QUOTES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
 
 
@@ -30,20 +39,55 @@ def _points_for_format(standard: float, ppr: float, scoring_format: str) -> floa
     return by_format[scoring_format]
 
 
-def _game_line(game: GameLine, scoring_format: str, is_kicker: bool) -> str:
+def _game_line(game: GameLine, scoring_format: str, is_kicker: bool, venue: str = "vs") -> str:
     stats = {k: v for k, v in game.stats.items() if k not in _POINTS_KEYS}
     if not is_kicker:
         stats[f"fantasy_points ({scoring_format})"] = _points_for_format(
             game.stats["fantasy_points"], game.stats["fantasy_points_ppr"], scoring_format
         )
     rendered = ", ".join(f"{name}={value:g}" for name, value in stats.items())
-    return f"Week {game.week} vs {game.opponent}: {rendered}"
+    return f"Week {game.week} {venue} {game.opponent}: {rendered}"
+
+
+def _venue(week: ScheduleWeek) -> str:
+    return "vs" if week.home else "@"
 
 
 def _target_week_line(week: ScheduleWeek) -> str:
     if week.opponent is None:
         return f"Week {week.week}: BYE"
-    return f"Week {week.week}: {'vs' if week.home else '@'} {week.opponent}"
+    return f"Week {week.week}: {_venue(week)} {week.opponent}"
+
+
+def _roster_status_lines(ctx: ResolvedContext) -> list[str]:
+    if ctx.roster_status == "ACT":
+        return []
+    meaning = _ROSTER_STATUS_MEANINGS.get(ctx.roster_status, "unrecognized status code")
+    return [f"Roster status: {ctx.roster_status} ({meaning})"]
+
+
+def _injury_lines(
+    ctx: ResolvedContext,
+    injuries: SourceResult[InjuryData],
+    sched: SourceResult[ScheduleData],
+) -> list[str]:
+    if sched.status == "ok" and any(
+        week.week == ctx.week and week.opponent is None for week in sched.data.weeks
+    ):
+        return []
+    if injuries.status == "error":
+        return [f"Week {ctx.week} injury report failed to load: {injuries.error}"]
+    if injuries.status == "empty":
+        return [f"Week {ctx.week} injury report not available yet"]
+    entry = injuries.data.entry
+    if entry is None:
+        return [f"Not on the Week {ctx.week} injury report"]
+    line = f"Injury report (Week {ctx.week}): {entry.report_status or 'no game designation'}"
+    if entry.primary_injury is not None:
+        line += f" ({entry.primary_injury})"
+    if entry.practice_status is not None:
+        line += f". Practice: {entry.practice_status}"
+    return [line]
 
 
 def _matchup_line(opponent: str, defense: DefenseData, scoring_format: str) -> str:
@@ -95,13 +139,14 @@ def _past_week_line(
 ) -> str:
     if week.opponent is None:
         return f"Week {week.week}: BYE"
+    prefix = f"Week {week.week} {_venue(week)} {week.opponent}"
     if not week.played:
-        return f"Week {week.week} vs {week.opponent}: game not yet played, stats pending"
+        return f"{prefix}: game not yet played, stats pending"
     if stats.status == "error":
-        return f"Week {week.week} vs {week.opponent}: stats unavailable"
+        return f"{prefix}: stats unavailable"
     if week.week in games:
-        return _game_line(games[week.week], scoring_format, is_kicker)
-    return f"Week {week.week} vs {week.opponent}: did not play"
+        return _game_line(games[week.week], scoring_format, is_kicker, _venue(week))
+    return f"{prefix}: did not play"
 
 
 def _render_player(inputs: PlayerInputs, mention: str) -> list[str]:
@@ -112,6 +157,8 @@ def _render_player(inputs: PlayerInputs, mention: str) -> list[str]:
     lines = [f"## {ctx.player_name} ({ctx.team})"]
     if _normalize_name(mention) != _normalize_name(ctx.player_name):
         lines.append(f'Interpreted "{mention}" as {ctx.player_name} ({ctx.team} {ctx.position})')
+    lines.extend(_roster_status_lines(ctx))
+    lines.extend(_injury_lines(ctx, inputs.injuries, sched))
 
     if sched.status == "ok":
         weeks = {week.week: week for week in sched.data.weeks}

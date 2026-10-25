@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from ffassistant.clients.anthropic_client import parse_structured
-from ffassistant.config import CURRENT_WEEK, PARSER_MODEL, SEASON
+from ffassistant.clients.anthropic_client import StructuredResponse, parse_structured
+from ffassistant.config import PARSER_MODEL, SEASON
 from ffassistant.resolution.models import ExtractedRequest
 from ffassistant.resolution.roster import load_fantasy_roster, render_roster
 
@@ -27,10 +27,25 @@ Season: {season}. Current week: {current_week}.
 """
 
 
-def extract(prompt: str) -> ExtractedRequest:
+def _print_debug(response: StructuredResponse[ExtractedRequest]) -> None:
+    extracted, usage = response.parsed, response.usage
+    print("--- Extracted request ---")
+    for player in extracted.players:
+        print(f'"{player.mention}" -> {player.player_id or "null"}')
+    print(f"week: {extracted.week if extracted.week is not None else 'null'}")
+    print(f"scoring_format: {extracted.scoring_format or 'null'}")
+    print(
+        f"cache_creation_input_tokens={usage.cache_creation_input_tokens}, "
+        f"cache_read_input_tokens={usage.cache_read_input_tokens}"
+    )
+    print("-------------------------")
+    print()
+
+
+def extract(prompt: str, current_week: int, debug: bool = False) -> ExtractedRequest:
     roster = load_fantasy_roster(SEASON)
     instructions = _INSTRUCTIONS.format(
-        season=SEASON, current_week=CURRENT_WEEK, next_week=CURRENT_WEEK + 1
+        season=SEASON, current_week=current_week, next_week=current_week + 1
     )
     system = [
         {"type": "text", "text": instructions},
@@ -40,10 +55,13 @@ def extract(prompt: str) -> ExtractedRequest:
             "cache_control": {"type": "ephemeral"},
         },
     ]
-    return parse_structured(
+    response = parse_structured(
         model=PARSER_MODEL,
         system=system,
         user_content=prompt,
         output_model=ExtractedRequest,
         max_tokens=1024,
     )
+    if debug:
+        _print_debug(response)
+    return response.parsed

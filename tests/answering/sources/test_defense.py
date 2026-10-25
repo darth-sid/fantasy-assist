@@ -10,6 +10,7 @@ CTX = ResolvedContext(
     player_name="Justin Jefferson",
     team="MIN",
     position="WR",
+    roster_status="ACT",
     season=2026,
     week=7,
     scoring_format="PPR",

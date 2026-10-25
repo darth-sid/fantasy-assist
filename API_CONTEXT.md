@@ -56,6 +56,15 @@ never import `nflreadpy` directly.
   all-seasons default never applies). Filtered on `game_type == "REG"` and the
   player's team as `home_team` or `away_team`. Columns relied on: `game_type`,
   `week`, `home_team`, `away_team`, `result`.
+- `load_injuries(seasons)` — used by `answering/sources/injuries.py` via
+  `clients.nflreadpy_client.load_injuries` (single season). One row per
+  `(gsis_id, week)`, REG only (weeks 1 to 7 for 2026 as of 2026-10-24). Filtered
+  on `week` and `team`, then `gsis_id`. Columns relied on: `gsis_id`, `team`,
+  `week`, `report_status` (`Out`, `Doubtful`, `Questionable`, or null),
+  `report_primary_injury`, `practice_status`.
+- `get_current_week()` — used by `__main__.py` via
+  `clients.nflreadpy_client.get_current_week`, always with the default
+  `use_date=False` (schedule-based: the earliest week with an unplayed game).
 
 ## Full loader surface (v0.1.5)
 
@@ -93,8 +102,10 @@ list[int]` = specific season(s), unless noted otherwise.
 
 ## Gotchas / observations
 
-- `get_current_week(use_date=False)` triggers a schedule load — prefer `use_date=True`
-  if we just need a rough week number without a network round-trip.
+- `get_current_week(use_date=False)` triggers a schedule load (network cost), but
+  `use_date=True` is **wrong for 2026**: it assumes the season starts on the
+  first Thursday of September (Sept 3), while 2026 kicked off Sept 9, so it
+  returned 8 on 2026-10-24 when the real current week was 7. Use the default.
 - `config.SEASON` is currently hardcoded to `2026` rather than derived from
   `get_current_season()` — see the stand-in comment in `config.py`.
 - `load_rosters(season)` is **not** one row per player. It's one row per observed
@@ -115,8 +126,9 @@ list[int]` = specific season(s), unless noted otherwise.
 - Roster `status` codes seen: `ACT`, `DEV`, `CUT`, `RES`, `INA`, `TRC`, `TRD`, `EXE`,
   `PUP`, `TRT`, `RET` (and others). The fantasy roster context includes every
   status (reserve/IR players must be resolvable) and shows it to the LLM.
-  `answering/player_context.py` ignores `status` and just picks the latest row
-  at/before the target week for the team.
+  `answering/player_context.py` takes team and `status` from the latest row
+  at/before the target week; the answer context flags any status other than
+  `ACT`.
 - The 2026 fantasy roster (QB/RB/WR/TE/K, one row per `gsis_id`) is 997 players.
   One row has a null `gsis_id` (Al-Jay Henderson, NYJ RB, DEV) and is dropped, so
   996 are rendered: ~43.6k characters, **21,132 tokens** as measured with
@@ -148,4 +160,14 @@ list[int]` = specific season(s), unless noted otherwise.
   Known, not yet solved.
 - Points allowed by position is a small sample: 5 to 6 games per defense as of
   Week 7 of 2026 (byes account for the 5s).
+- `load_injuries` `report_status` null means the player was listed (usually for
+  practice) but has no game designation.
+- Players on reserve lists (IR etc.) **drop off the injury report**. Jalen Hurts
+  was `Out, Calf` in Week 6 of 2026 and has no Week 7 row while on `RES`. The
+  injury report alone can't catch IR; check roster `status` too.
+- A missing `load_injuries` row for a player is ambiguous on its own: it means
+  "not on the report" only if the player's team has rows that week. Otherwise
+  the report isn't out yet, or the team is on bye.
+- Teams on bye have no `load_injuries` rows that week (28 of 32 teams had Week 7
+  rows in 2026).
 - (Add new gotchas here as they're hit.)

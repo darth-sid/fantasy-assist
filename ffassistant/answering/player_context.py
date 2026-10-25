@@ -10,8 +10,8 @@ from ffassistant.resolution.models import ValidPlayer
 def player_context(
     player: ValidPlayer, season: int, week: int, scoring_format: str
 ) -> ResolvedContext:
-    """Team is taken from the roster row with the latest week <= `week`, falling
-    back to the earliest known row if none qualify."""
+    """Team and roster status are taken from the roster row with the latest
+    week <= `week`, falling back to the earliest known row if none qualify."""
     rows = load_rosters(season).filter(pl.col("gsis_id") == player.player_id).sort("week")
     prior = rows.filter(pl.col("week") <= week)
     row = prior.row(-1, named=True) if not prior.is_empty() else rows.row(0, named=True)
@@ -21,6 +21,7 @@ def player_context(
         player_name=player.full_name,
         team=row["team"],
         position=player.position,
+        roster_status=row["status"],
         season=season,
         week=week,
         scoring_format=scoring_format,
