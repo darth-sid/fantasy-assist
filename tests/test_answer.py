@@ -2,6 +2,7 @@ import ffassistant.answer as answer_module
 from ffassistant.answer import PlayerInputs, answer, render_context
 from ffassistant.clients.anthropic_client import GeneratedAnswer
 from ffassistant.contracts import Answer, ParsedRequest, ResolvedContext, SourceResult
+from ffassistant.sources.defense import DefenseData, DefenseRow
 from ffassistant.sources.recent_stats import GameLine, RecentStatsData
 from ffassistant.sources.schedule import ScheduleData, ScheduleWeek
 
@@ -15,11 +16,12 @@ def _parsed() -> ParsedRequest:
     )
 
 
-def _ctx(name: str, team: str, scoring_format: str = "PPR") -> ResolvedContext:
+def _ctx(name: str, team: str, scoring_format: str = "PPR", position: str = "WR") -> ResolvedContext:
     return ResolvedContext(
         player_id="00-0000001",
         player_name=name,
         team=team,
+        position=position,
         season=2026,
         week=7,
         scoring_format=scoring_format,
@@ -67,13 +69,30 @@ def _schedule_result(*replacements: ScheduleWeek) -> SourceResult[ScheduleData]:
     )
 
 
+def _defense_result(rows: list[DefenseRow] | None = None) -> SourceResult[DefenseData]:
+    if rows is None:
+        rows = [
+            DefenseRow(team="IND", games=6, standard_pg=24.0, ppr_pg=34.0),
+            DefenseRow(team="BAL", games=5, standard_pg=25.0, ppr_pg=40.0),
+            DefenseRow(team="SF", games=6, standard_pg=26.0, ppr_pg=30.0),
+            DefenseRow(team="NYG", games=6, standard_pg=17.0, ppr_pg=20.0),
+        ]
+    return SourceResult(
+        source="defense", status="ok", as_of="Week 7", data=DefenseData(position="WR", rows=rows)
+    )
+
+
 def _inputs(
     ctx: ResolvedContext,
     stats: SourceResult[RecentStatsData],
     sched: SourceResult[ScheduleData] | None = None,
+    defense: SourceResult[DefenseData] | None = None,
 ) -> PlayerInputs:
     return PlayerInputs(
-        ctx=ctx, recent_stats=stats, schedule=sched if sched is not None else _schedule_result()
+        ctx=ctx,
+        recent_stats=stats,
+        schedule=sched if sched is not None else _schedule_result(),
+        defense=defense if defense is not None else _defense_result(),
     )
 
 
@@ -293,7 +312,9 @@ def test_schedule_error_falls_back_to_stats_only():
 
 
 def test_kicker_renders_raw_stats_without_points():
-    context = render_context(_parsed(), [_inputs(_ctx("Brandon Aubrey", "DAL"), _kicker_result())])
+    context = render_context(
+        _parsed(), [_inputs(_ctx("Brandon Aubrey", "DAL", position="K"), _kicker_result())]
+    )
 
     week_1 = _line_with(context, "NYG")
     assert "fg_made=3" in week_1 and "fg_att=4" in week_1 and "pat_made=2" in week_1
@@ -302,3 +323,121 @@ def test_kicker_renders_raw_stats_without_points():
         "fantasy points unavailable for kickers (kicking is not scored in the source data)"
         in context.splitlines()
     )
+
+
+def _matchup_context(
+    scoring_format: str = "PPR",
+    opponent: str | None = "IND",
+    defense: SourceResult[DefenseData] | None = None,
+) -> list[str]:
+    sched = _schedule_result(ScheduleWeek(week=7, opponent=opponent, home=True, played=False))
+    ctx = _ctx("CeeDee Lamb", "DAL", scoring_format)
+    return render_context(_parsed(), [_inputs(ctx, _ok_result(), sched, defense)]).splitlines()
+
+
+def _matchup_line(lines: list[str]) -> str:
+    matches = [line for line in lines if line.startswith("Matchup")]
+    assert len(matches) == 1, f"expected one matchup line, got {matches}"
+    return matches[0]
+
+
+def test_matchup_line_follows_target_week_then_caveat():
+    lines = _matchup_context()
+
+    target = lines.index("Week 7: vs IND")
+    assert lines[target + 1] == (
+        "Matchup: IND has allowed 34.0 PPR points per game to WRs "
+        "(rank 2 of 4, 1 = most allowed, league avg 31.0, 6 games)"
+    )
+    assert lines[target + 2] == (
+        "Points allowed is a small early-season sample and is not adjusted for opponents faced."
+    )
+
+
+def test_matchup_line_standard():
+    assert _matchup_line(_matchup_context("Standard")) == (
+        "Matchup: IND has allowed 24.0 Standard points per game to WRs "
+        "(rank 3 of 4, 1 = most allowed, league avg 23.0, 6 games)"
+    )
+
+
+def test_matchup_line_half_ppr_ranks_on_midpoint():
+    assert _matchup_line(_matchup_context("Half-PPR")) == (
+        "Matchup: IND has allowed 29.0 Half-PPR points per game to WRs "
+        "(rank 2 of 4, 1 = most allowed, league avg 27.0, 6 games)"
+    )
+
+
+def test_matchup_line_unknown_format_shows_both_labeled():
+    assert _matchup_line(_matchup_context("Six-Point Passing TD")) == (
+        "Matchup: IND has allowed 24.0 Standard / 34.0 PPR points per game to WRs "
+        "(rank 3 / 2 of 4, 1 = most allowed, league avg 23.0 / 31.0, 6 games)"
+    )
+
+
+def test_matchup_rank_one_is_most_allowed():
+    assert "(rank 1 of 4," in _matchup_line(_matchup_context(opponent="BAL"))
+    assert "(rank 4 of 4," in _matchup_line(_matchup_context(opponent="NYG"))
+
+
+def test_matchup_ties_share_a_rank():
+    defense = _defense_result(
+        [
+            DefenseRow(team="IND", games=6, standard_pg=20.0, ppr_pg=34.0),
+            DefenseRow(team="BAL", games=6, standard_pg=20.0, ppr_pg=34.0),
+            DefenseRow(team="SF", games=6, standard_pg=20.0, ppr_pg=30.0),
+        ]
+    )
+
+    assert "(rank 1 of 3," in _matchup_line(_matchup_context(opponent="IND", defense=defense))
+    assert "(rank 1 of 3," in _matchup_line(_matchup_context(opponent="BAL", defense=defense))
+    assert "(rank 3 of 3," in _matchup_line(_matchup_context(opponent="SF", defense=defense))
+
+
+def test_no_matchup_line_on_bye():
+    lines = _matchup_context(opponent=None)
+
+    assert "Week 7: BYE" in lines
+    assert not any(line.startswith("Matchup") or line.startswith("Points allowed") for line in lines)
+
+
+def test_matchup_unavailable_when_schedule_fails():
+    sched_error = SourceResult(source="schedule", status="error", as_of="Week 7", error="boom")
+
+    context = render_context(
+        _parsed(), [_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result(), sched_error)]
+    )
+
+    assert "Matchup unavailable: no target-week opponent" in context.splitlines()
+
+
+def test_matchup_unavailable_when_defense_empty():
+    empty = SourceResult(source="defense", status="empty", as_of="Week 7")
+
+    assert _matchup_line(_matchup_context(defense=empty)) == (
+        "Matchup unavailable: no points-allowed data for WRs before Week 7"
+    )
+
+
+def test_matchup_unavailable_when_defense_errors():
+    error = SourceResult(source="defense", status="error", as_of="Week 7", error="HTTPError: 503")
+
+    assert _matchup_line(_matchup_context(defense=error)) == (
+        "Matchup unavailable: defense failed to load: HTTPError: 503"
+    )
+
+
+def test_matchup_unavailable_when_opponent_missing_from_table():
+    assert _matchup_line(_matchup_context(opponent="KC")) == (
+        "Matchup unavailable: no games found for KC defense"
+    )
+
+
+def test_kicker_gets_matchup_unavailable_line():
+    context = render_context(
+        _parsed(), [_inputs(_ctx("Brandon Aubrey", "DAL", position="K"), _kicker_result())]
+    )
+
+    lines = context.splitlines()
+    assert "Matchup unavailable for kickers (kicking is not scored in the source data)" in lines
+    assert not any(line.startswith("Matchup:") for line in lines)

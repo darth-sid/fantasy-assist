@@ -23,6 +23,8 @@ _ANSWER_SYSTEM_PROMPT = """Answer the user's fantasy football question using onl
 - If a player's data is missing or failed to load, say so plainly for that
   player. Don't fill the gap with outside knowledge or guesses.
 - A player whose team is on BYE in the target week cannot score that week.
+- The matchup rank is one input among several. Don't let it outweigh a player's
+  own usage and production.
 - cited_doc_ids: leave empty.
 """
 

@@ -25,6 +25,7 @@ def test_resolves_single_roster_row(monkeypatch):
     assert ctx.player_id == "00-0036322"
     assert ctx.team == "MIN"
     assert ctx.player_name == "Justin Jefferson"
+    assert ctx.position == "WR"
 
 
 def test_lookup_is_case_and_whitespace_insensitive(monkeypatch):
@@ -144,6 +145,7 @@ def test_resolves_fantasy_positions(monkeypatch, position):
     ctx = resolve_from_player("Test Player", season=2026, week=7, scoring_format="PPR")
 
     assert ctx.player_id == "00-1111111"
+    assert ctx.position == position
 
 
 @pytest.mark.parametrize("position", ["OL", "DL", "LB", "DB", "P", "LS"])

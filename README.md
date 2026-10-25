@@ -18,7 +18,9 @@ All code lives in the `ffassistant/` package:
   `data`, `error`). `recent_stats.py` (`RecentStatsData`) has the player's
   per-game stats before the target week; `schedule.py` (`ScheduleData`) has the
   player's team's opponent, home/away, and played status for each week through
-  the target week, with `None` opponent meaning bye.
+  the target week, with `None` opponent meaning bye; `defense.py` (`DefenseData`)
+  has the league table of fantasy points each defense allowed per game to the
+  player's position before the target week.
 - `resolution/` — turns a raw request into resolved identifiers.
   `request_parser.py` turns a natural-language prompt into a `ParsedRequest`
   (player names, week, scoring format) via an LLM structured-extraction call
@@ -31,9 +33,10 @@ All code lives in the `ffassistant/` package:
   `sources/`/`resolution/` call through these instead of importing either
   library directly.
 - `answer.py` — the end of the pipeline. `render_context` turns the parsed request
-  and each player's `PlayerInputs` (`ctx`, `recent_stats`, `schedule`) into a text
+  and each player's `PlayerInputs` (`ctx`, `recent_stats`, `schedule`, `defense`) into a text
   context (empty and errored results render as explicit lines, so no player
-  silently drops out). Per player it shows the target week's matchup or bye, then
+  silently drops out). Per player it shows the target week's opponent or bye, the opponent's points
+  allowed to the player's position with a league rank, then
   one line per past week merging schedule and stats (bye, stats, did not play,
   or stats pending); each stats row shows fantasy points for the request's
   scoring format, labeled, except for kickers, whose points the source doesn't

@@ -4,11 +4,14 @@ from dataclasses import dataclass
 
 from ffassistant.clients.anthropic_client import generate_answer
 from ffassistant.contracts import Answer, ParsedRequest, ResolvedContext, SourceResult
+from ffassistant.sources.defense import DefenseData
 from ffassistant.sources.recent_stats import GameLine, RecentStatsData
 from ffassistant.sources.schedule import ScheduleData, ScheduleWeek
 
 _POINTS_KEYS = ("fantasy_points", "fantasy_points_ppr")
 _KICKER_LINE = "fantasy points unavailable for kickers (kicking is not scored in the source data)"
+_KICKER_MATCHUP_LINE = "Matchup unavailable for kickers (kicking is not scored in the source data)"
+_MATCHUP_CAVEAT = "Points allowed is a small early-season sample and is not adjusted for opponents faced."
 
 
 @dataclass
@@ -16,10 +19,10 @@ class PlayerInputs:
     ctx: ResolvedContext
     recent_stats: SourceResult[RecentStatsData]
     schedule: SourceResult[ScheduleData]
+    defense: SourceResult[DefenseData]
 
 
-def _points_for_format(stats: dict[str, float], scoring_format: str) -> dict[str, float]:
-    standard, ppr = stats["fantasy_points"], stats["fantasy_points_ppr"]
+def _points_for_format(standard: float, ppr: float, scoring_format: str) -> dict[str, float]:
     by_format = {
         "Standard": standard,
         "PPR": ppr,
@@ -27,14 +30,17 @@ def _points_for_format(stats: dict[str, float], scoring_format: str) -> dict[str
         "Half-PPR": (standard + ppr) / 2,
     }
     if scoring_format in by_format:
-        return {f"fantasy_points ({scoring_format})": by_format[scoring_format]}
-    return {"fantasy_points (Standard)": standard, "fantasy_points (PPR)": ppr}
+        return {scoring_format: by_format[scoring_format]}
+    return {"Standard": standard, "PPR": ppr}
 
 
 def _game_line(game: GameLine, scoring_format: str, is_kicker: bool) -> str:
     stats = {k: v for k, v in game.stats.items() if k not in _POINTS_KEYS}
     if not is_kicker:
-        stats.update(_points_for_format(game.stats, scoring_format))
+        points = _points_for_format(
+            game.stats["fantasy_points"], game.stats["fantasy_points_ppr"], scoring_format
+        )
+        stats.update({f"fantasy_points ({fmt})": value for fmt, value in points.items()})
     rendered = ", ".join(f"{name}={value:g}" for name, value in stats.items())
     return f"Week {game.week} vs {game.opponent}: {rendered}"
 
@@ -43,6 +49,50 @@ def _target_week_line(week: ScheduleWeek) -> str:
     if week.opponent is None:
         return f"Week {week.week}: BYE"
     return f"Week {week.week}: {'vs' if week.home else '@'} {week.opponent}"
+
+
+def _matchup_line(opponent: str, defense: DefenseData, scoring_format: str) -> str:
+    by_team = {
+        row.team: _points_for_format(row.standard_pg, row.ppr_pg, scoring_format)
+        for row in defense.rows
+    }
+    opponent_points = by_team[opponent]
+    values, ranks, averages = [], [], []
+    for fmt, value in opponent_points.items():
+        # Ranked at display precision so teams that look tied in the context share a rank.
+        league = [round(points[fmt], 1) for points in by_team.values()]
+        values.append(f"{value:.1f} {fmt}")
+        ranks.append(str(1 + sum(other > round(value, 1) for other in league)))
+        averages.append(f"{sum(points[fmt] for points in by_team.values()) / len(by_team):.1f}")
+    games = next(row.games for row in defense.rows if row.team == opponent)
+    return (
+        f"Matchup: {opponent} has allowed {' / '.join(values)} points per game to "
+        f"{defense.position}s (rank {' / '.join(ranks)} of {len(by_team)}, 1 = most allowed, "
+        f"league avg {' / '.join(averages)}, {games} game{'' if games == 1 else 's'})"
+    )
+
+
+def _matchup_lines(
+    ctx: ResolvedContext,
+    sched: SourceResult[ScheduleData],
+    defense: SourceResult[DefenseData],
+) -> list[str]:
+    if ctx.position == "K":
+        return [_KICKER_MATCHUP_LINE]
+    if sched.status != "ok":
+        return ["Matchup unavailable: no target-week opponent"]
+    opponent = next(week.opponent for week in sched.data.weeks if week.week == ctx.week)
+    if opponent is None:
+        return []
+    if defense.status == "error":
+        return [f"Matchup unavailable: defense failed to load: {defense.error}"]
+    if defense.status == "empty":
+        return [
+            f"Matchup unavailable: no points-allowed data for {ctx.position}s before Week {ctx.week}"
+        ]
+    if opponent not in {row.team for row in defense.data.rows}:
+        return [f"Matchup unavailable: no games found for {opponent} defense"]
+    return [_matchup_line(opponent, defense.data, ctx.scoring_format), _MATCHUP_CAVEAT]
 
 
 def _past_week_line(
@@ -73,6 +123,7 @@ def _render_player(inputs: PlayerInputs) -> list[str]:
     if sched.status == "ok":
         weeks = {week.week: week for week in sched.data.weeks}
         lines.append(_target_week_line(weeks[ctx.week]))
+        lines.extend(_matchup_lines(ctx, sched, inputs.defense))
         if is_kicker:
             lines.append(_KICKER_LINE)
         if stats.status == "error":
@@ -87,6 +138,7 @@ def _render_player(inputs: PlayerInputs) -> list[str]:
         lines.append(f"schedule failed to load: {sched.error}")
     else:
         lines.append(f"No schedule found for {ctx.team} through Week {ctx.week}.")
+    lines.extend(_matchup_lines(ctx, sched, inputs.defense))
     if is_kicker:
         lines.append(_KICKER_LINE)
     if stats.status == "error":

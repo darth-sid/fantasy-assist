@@ -61,6 +61,7 @@ def resolve_from_player(name: str, season: int, week: int, scoring_format: str) 
         player_id=row["gsis_id"],
         player_name=row["full_name"],
         team=row["team"],
+        position=row["position"],
         season=season,
         week=week,
         scoring_format=scoring_format,

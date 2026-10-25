@@ -39,9 +39,14 @@ never import `nflreadpy` directly.
   (`completions`, `attempts`, `passing_yards`, `passing_tds`, `passing_interceptions`,
   `carries`, `rushing_yards`, `rushing_tds`, `receptions`, `targets`, `receiving_yards`,
   `receiving_tds`, `fg_made`, `fg_att`, `pat_made`).
+  Also used by `sources/defense.py`: points allowed is derived by filtering on
+  `season_type`, `week`, and `position`, then grouping by `opponent_team` (summed
+  per `(opponent_team, week)`, then averaged per defense). So `load_player_stats`
+  is now called by two sources per player; nflreadpy's in-memory cache absorbs
+  the repeat.
 - `load_rosters(seasons)` — used by `resolution/player_resolver.py` via
   `clients.nflreadpy_client.load_rosters`. Columns relied on: `full_name`, `gsis_id`,
-  `team`, `week`. See gotchas below — this is not a simple one-row-per-player table.
+  `team`, `week`, `position`. See gotchas below — this is not a simple one-row-per-player table.
 - `load_schedules(seasons)` — used by `sources/schedule.py` via
   `clients.nflreadpy_client.load_schedules` (always passed a single season, so the
   all-seasons default never applies). Filtered on `game_type == "REG"` and the
@@ -131,4 +136,6 @@ list[int]` = specific season(s), unless noted otherwise.
   the target week. A player traded mid-season gets past weeks matched against the
   wrong team's schedule (e.g. "did not play" for weeks they played elsewhere).
   Known, not yet solved.
+- Points allowed by position is a small sample: 5 to 6 games per defense as of
+  Week 7 of 2026 (byes account for the 5s).
 - (Add new gotchas here as they're hit.)

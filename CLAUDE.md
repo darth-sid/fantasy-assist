@@ -50,12 +50,19 @@ means bye; `played` comes from `result` being non-null. Known simplification: it
 uses the player's team as of the target week, so a player traded mid-season gets
 past weeks matched against the wrong team's schedule.
 
+`sources/defense.py`'s `defense(ctx)` returns `SourceResult[DefenseData]`
+(`position`, `rows: list[DefenseRow]`), the whole league table of fantasy points
+each defense allowed to `ctx.position`: REG games strictly before `ctx.week`,
+summed per `(opponent_team, week)` across that position's players, then averaged
+per defense (`DefenseRow`: `team`, `games`, `standard_pg`, `ppr_pg`). No rows
+(e.g. Week 1) is `status="empty"`.
+
 The answer path ends in `answer.py`. Each player's inputs travel as a
-`PlayerInputs(ctx, recent_stats, schedule)` dataclass. `render_context(parsed, players)`
+`PlayerInputs(ctx, recent_stats, schedule, defense)` dataclass. `render_context(parsed, players)`
 turns the `ParsedRequest` plus a `list[PlayerInputs]` into a text context (raw
 prompt, week, scoring format, then per player a `name (team)` header). When the
 schedule loaded, the header is followed by the target week (`Week 7: vs IND`,
-`Week 7: @ BAL`, or `Week 7: BYE`), then one line per past week 1..`ctx.week - 1`
+`Week 7: @ BAL`, or `Week 7: BYE`), then the matchup lines (below), then one line per past week 1..`ctx.week - 1`
 merging schedule and stats: `Week 6: BYE`; the stats line if the team played and
 the player has a stat row; `Week 4 vs MIA: did not play` if the team played and
 the player has none; `Week 6 vs SF: game not yet played, stats pending` if the
@@ -66,7 +73,20 @@ error line is rendered and played weeks show `stats unavailable` instead of
 line shows only the points for the request's scoring format, labeled (e.g.
 `fantasy_points (Half-PPR)=15.4`); Half-PPR is derived as the midpoint of
 standard and PPR, and an unrecognized format shows both standard and PPR,
-labeled. Kickers (`position == "K"`) get raw stats with no points value plus one
+labeled. The matchup line, e.g.
+`Matchup: BAL has allowed 34.1 PPR points per game to WRs (rank 5 of 32, 1 = most allowed, league avg 30.2, 6 games)`,
+is followed by a fixed small-sample / not-opponent-adjusted caveat line. Its
+per-game value uses the same format rules (`_points_for_format`); for an
+unrecognized format one line pairs both: `28.0 Standard / 34.1 PPR points ...
+(rank 6 / 5 of 32, ... league avg 24.1 / 30.2, ...)`. Rank is competition-style
+(ties share a rank) over values rounded to the displayed 0.1; league avg is the
+mean of the teams' per-game values. Fallbacks: no line on a target-week BYE;
+`Matchup unavailable: no target-week opponent` when the schedule didn't load (it
+follows the schedule failure line); `Matchup unavailable: defense failed to load:
+<error>` / `Matchup unavailable: no points-allowed data for WRs before Week 7` for
+defense `error`/`empty`; `Matchup unavailable: no games found for <TEAM> defense`
+when the opponent has no row; and `Matchup unavailable for kickers ...` when
+`ctx.position == "K"`. Kickers (`position == "K"`) get raw stats with no points value plus one
 `fantasy points unavailable for kickers ...` line, since nflverse doesn't score
 kicking. `status="empty"` and `status="error"` render as explicit lines — a
 player never silently disappears. `answer(parsed, players)` sends that context to
@@ -75,12 +95,16 @@ player never silently disappears. `answer(parsed, players)` sends that context t
 (`contracts.py`): `answer: str` (markdown, format chosen by the LLM to fit the
 question) and `cited_doc_ids: list[str]` (always empty for now, reserved for a
 future news branch). **The LLM makes the start/sit call.** Its system prompt also
-says a player whose team is on bye in the target week cannot score that week.
+says a player whose team is on bye in the target week cannot score that week, and
+that the matchup rank is one input among several and shouldn't outweigh a
+player's own usage and production.
 
 `resolution/player_resolver.py`'s `resolve_from_player(name, season, week, scoring_format)`
 resolves a player name via `load_rosters(season)`, restricted to fantasy
 positions (QB/RB/WR/TE/K) — picking the roster row with the latest
-`week <= target week` — and returns a `ResolvedContext` directly. Raises on no
+`week <= target week` — and returns a `ResolvedContext` directly, including the
+roster `position` (used instead of the stats position because it exists for a
+player with no games yet). Raises on no
 match or on a name matching multiple distinct players (`gsis_id`s) — no silent wrong
 answers yet. `resolution/request_parser.py`'s `parse_request(prompt)` turns a
 natural-language prompt into a `ParsedRequest` (player names, week, scoring format)
@@ -105,10 +129,11 @@ Two LLM touch points, both through `clients/anthropic_client.py` at
    structured `ParsedRequest` (player names, week, scoring format).
    Model: `config.PARSER_MODEL`.
 2. `answer.py` — **makes the start/sit decision.** Gets the rendered context
-   (request + per-player schedule and recent stats) and returns the `Answer` envelope.
+   (request + per-player schedule, matchup, and recent stats) and returns the `Answer` envelope.
    Model: `config.ANSWER_MODEL`. The system prompt tells it to say plainly when a
-   player's data is missing or failed to load rather than fill the gap, and that a
-   player on bye in the target week cannot score.
+   player's data is missing or failed to load rather than fill the gap, that a
+   player on bye in the target week cannot score, and that the matchup rank
+   shouldn't outweigh a player's own usage and production.
 
 ## Data Sources
 
@@ -223,3 +248,17 @@ The **body is authoritative** (current state); the log is provenance.
   doesn't score kicking.
 - 2026-10-19 — `DEBUG=true` (env var or `.env`) makes `__main__.py` print the
   rendered answer context before the answer.
+- 2026-10-24 — `ResolvedContext` gains `position`, taken from the roster row in
+  `resolve_from_player` (exists even for a player with no games yet).
+- 2026-10-24 — Added `sources/defense.py` (`defense(ctx) -> SourceResult[DefenseData]`):
+  league table of standard/PPR points each defense allowed per game to `ctx.position`,
+  from `load_player_stats`, weeks strictly before `ctx.week`. `PlayerInputs` gains
+  `defense`; `__main__.py` calls it.
+- 2026-10-24 — Answer context gets a matchup line after the target week (opponent's
+  points allowed per game to the position, rank with 1 = most allowed, league avg,
+  games) plus a small-sample caveat line. Format via `_points_for_format`; an
+  unrecognized format renders one combined line (`Standard / PPR` values, ranks,
+  and averages). Explicit fallbacks for BYE (no line), schedule failure, defense
+  empty/error, opponent missing, and kickers.
+- 2026-10-24 — Answer system prompt: the matchup rank is one input among several
+  and shouldn't outweigh a player's own usage and production.

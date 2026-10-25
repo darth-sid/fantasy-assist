@@ -15,6 +15,7 @@ class ResolvedContext:
     player_id: str
     player_name: str
     team: str
+    position: str
     season: int
     week: int
     scoring_format: str  # e.g. "PPR", "Standard", "Half-PPR"
