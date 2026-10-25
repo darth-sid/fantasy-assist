@@ -1,8 +1,8 @@
 import polars as pl
 
-import ffassistant.sources.recent_stats as recent_stats_module
-from ffassistant.contracts import ResolvedContext
-from ffassistant.sources.recent_stats import recent_stats
+import ffassistant.answering.sources.recent_stats as recent_stats_module
+from ffassistant.answering.models import ResolvedContext
+from ffassistant.answering.sources.recent_stats import recent_stats
 
 CTX = ResolvedContext(
     player_id="00-0036322",

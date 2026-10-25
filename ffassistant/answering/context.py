@@ -1,46 +1,41 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
 
-from ffassistant.clients.anthropic_client import generate_answer
-from ffassistant.contracts import Answer, ParsedRequest, ResolvedContext, SourceResult
-from ffassistant.sources.defense import DefenseData
-from ffassistant.sources.recent_stats import GameLine, RecentStatsData
-from ffassistant.sources.schedule import ScheduleData, ScheduleWeek
+from ffassistant.answering.models import PlayerInputs, ResolvedContext, SourceResult
+from ffassistant.answering.sources.defense import DefenseData
+from ffassistant.answering.sources.recent_stats import GameLine, RecentStatsData
+from ffassistant.answering.sources.schedule import ScheduleData, ScheduleWeek
+from ffassistant.resolution.models import ValidatedRequest
 
 _POINTS_KEYS = ("fantasy_points", "fantasy_points_ppr")
 _KICKER_LINE = "fantasy points unavailable for kickers (kicking is not scored in the source data)"
 _KICKER_MATCHUP_LINE = "Matchup unavailable for kickers (kicking is not scored in the source data)"
 _MATCHUP_CAVEAT = "Points allowed is a small early-season sample and is not adjusted for opponents faced."
+_CURLY_QUOTES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
 
 
-@dataclass
-class PlayerInputs:
-    ctx: ResolvedContext
-    recent_stats: SourceResult[RecentStatsData]
-    schedule: SourceResult[ScheduleData]
-    defense: SourceResult[DefenseData]
+def _normalize_name(name: str) -> str:
+    normalized = name.strip().lower().translate(_CURLY_QUOTES)
+    return re.sub(r"\s+", " ", normalized)
 
 
-def _points_for_format(standard: float, ppr: float, scoring_format: str) -> dict[str, float]:
+def _points_for_format(standard: float, ppr: float, scoring_format: str) -> float:
     by_format = {
         "Standard": standard,
         "PPR": ppr,
         # ppr - standard is exactly receptions, so the midpoint is exactly half-PPR
         "Half-PPR": (standard + ppr) / 2,
     }
-    if scoring_format in by_format:
-        return {scoring_format: by_format[scoring_format]}
-    return {"Standard": standard, "PPR": ppr}
+    return by_format[scoring_format]
 
 
 def _game_line(game: GameLine, scoring_format: str, is_kicker: bool) -> str:
     stats = {k: v for k, v in game.stats.items() if k not in _POINTS_KEYS}
     if not is_kicker:
-        points = _points_for_format(
+        stats[f"fantasy_points ({scoring_format})"] = _points_for_format(
             game.stats["fantasy_points"], game.stats["fantasy_points_ppr"], scoring_format
         )
-        stats.update({f"fantasy_points ({fmt})": value for fmt, value in points.items()})
     rendered = ", ".join(f"{name}={value:g}" for name, value in stats.items())
     return f"Week {game.week} vs {game.opponent}: {rendered}"
 
@@ -56,19 +51,15 @@ def _matchup_line(opponent: str, defense: DefenseData, scoring_format: str) -> s
         row.team: _points_for_format(row.standard_pg, row.ppr_pg, scoring_format)
         for row in defense.rows
     }
-    opponent_points = by_team[opponent]
-    values, ranks, averages = [], [], []
-    for fmt, value in opponent_points.items():
-        # Ranked at display precision so teams that look tied in the context share a rank.
-        league = [round(points[fmt], 1) for points in by_team.values()]
-        values.append(f"{value:.1f} {fmt}")
-        ranks.append(str(1 + sum(other > round(value, 1) for other in league)))
-        averages.append(f"{sum(points[fmt] for points in by_team.values()) / len(by_team):.1f}")
+    value = by_team[opponent]
+    # Ranked at display precision so teams that look tied in the context share a rank.
+    rank = 1 + sum(round(other, 1) > round(value, 1) for other in by_team.values())
+    average = sum(by_team.values()) / len(by_team)
     games = next(row.games for row in defense.rows if row.team == opponent)
     return (
-        f"Matchup: {opponent} has allowed {' / '.join(values)} points per game to "
-        f"{defense.position}s (rank {' / '.join(ranks)} of {len(by_team)}, 1 = most allowed, "
-        f"league avg {' / '.join(averages)}, {games} game{'' if games == 1 else 's'})"
+        f"Matchup: {opponent} has allowed {value:.1f} {scoring_format} points per game to "
+        f"{defense.position}s (rank {rank} of {len(by_team)}, 1 = most allowed, "
+        f"league avg {average:.1f}, {games} game{'' if games == 1 else 's'})"
     )
 
 
@@ -113,12 +104,14 @@ def _past_week_line(
     return f"Week {week.week} vs {week.opponent}: did not play"
 
 
-def _render_player(inputs: PlayerInputs) -> list[str]:
+def _render_player(inputs: PlayerInputs, mention: str) -> list[str]:
     ctx, stats, sched = inputs.ctx, inputs.recent_stats, inputs.schedule
     is_kicker = stats.status == "ok" and stats.data.position == "K"
     games = {game.week: game for game in stats.data.games} if stats.status == "ok" else {}
 
     lines = [f"## {ctx.player_name} ({ctx.team})"]
+    if _normalize_name(mention) != _normalize_name(ctx.player_name):
+        lines.append(f'Interpreted "{mention}" as {ctx.player_name} ({ctx.team} {ctx.position})')
 
     if sched.status == "ok":
         weeks = {week.week: week for week in sched.data.weeks}
@@ -150,18 +143,18 @@ def _render_player(inputs: PlayerInputs) -> list[str]:
     return lines
 
 
-def render_context(parsed: ParsedRequest, players: list[PlayerInputs]) -> str:
+def render_context(validated: ValidatedRequest, players: list[PlayerInputs]) -> str:
     lines = [
-        f"Question: {parsed.raw_prompt}",
-        f"Week: {parsed.week}",
-        f"Scoring format: {parsed.scoring_format}",
+        f"Question: {validated.raw_prompt}",
+        f"Week: {validated.week}",
+        f"Scoring format: {validated.scoring_format}",
     ]
+    lines.extend(
+        f'Could not resolve "{rejected.mention}": {rejected.reason}'
+        for rejected in validated.rejected
+    )
+    mentions = {player.player_id: player.mention for player in validated.players}
     for inputs in players:
         lines.append("")
-        lines.extend(_render_player(inputs))
+        lines.extend(_render_player(inputs, mentions[inputs.ctx.player_id]))
     return "\n".join(lines)
-
-
-def answer(parsed: ParsedRequest, players: list[PlayerInputs]) -> Answer:
-    generated = generate_answer(render_context(parsed, players))
-    return Answer(answer=generated.answer, cited_doc_ids=generated.cited_doc_ids)

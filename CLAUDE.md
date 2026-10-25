@@ -25,115 +25,172 @@ ask Sid rather than writing it.
 ## Current edge
 
 Structure: all code lives in the `ffassistant/` package (run with
-`python -m ffassistant`; imports are absolute, `from ffassistant.x import ...`).
-Inside it: `sources/`, `resolution/`, and `clients/` subfolders, everything else
-flat. `tests/` mirrors the package's folders (`tests/sources/`,
-`tests/resolution/`, top-level modules at `tests/`). Paths below are relative to
-`ffassistant/`. `clients/nflreadpy_client.py` holds all raw nflreadpy access
-and `clients/anthropic_client.py` holds all raw Anthropic SDK access; `sources/`
-and `resolution/` call through `clients/` rather than importing either library
-directly.
+`python -m ffassistant`; imports are absolute, `from ffassistant.x import ...`),
+split into two stages plus shared plumbing: `resolution/` (stage 1, prompt ->
+`ValidatedRequest`), `answering/` (stage 2, `ValidatedRequest` -> `Answer`, with
+`answering/sources/` inside it), `clients/`, and flat `config.py` /
+`__main__.py`. `tests/` mirrors the package's folders (`tests/resolution/`,
+`tests/answering/`, `tests/answering/sources/`). Paths below are relative to
+`ffassistant/`.
 
-Pipeline: `sources/*.py` implement `(ctx: ResolvedContext) -> SourceResult[T]`, where
-`T` is a rich, source-specific data type the branch defines itself (e.g.
-`sources/recent_stats.py`'s `RecentStatsData`) — branches are not forced into a
-shared text-block output beyond the `SourceResult` envelope (`source`, `status`,
-`as_of`, `data`, `error`). `sources/recent_stats.py` bounds games to strictly
-before `ctx.week` (was previously unbounded — a leakage bug) and stamps every
-game with `"fantasy_points"` (standard) and `"fantasy_points_ppr"` regardless of
-position, alongside the existing position-specific raw stats.
+**Dependency rule:** `answering/` may import `resolution.models` (the
+`ValidatedRequest` handoff type and its parts); `resolution/` never imports from
+`answering/`. There is no shared `contracts.py`; each type lives in the stage
+that owns it.
 
-`sources/schedule.py`'s `schedule(ctx)` returns `SourceResult[ScheduleData]`:
-`team` plus one `ScheduleWeek` (`week`, `opponent`, `home`, `played`) per week
-1..`ctx.week`, from that season's REG games involving `ctx.team`. `opponent=None`
-means bye; `played` comes from `result` being non-null. Known simplification: it
-uses the player's team as of the target week, so a player traded mid-season gets
-past weeks matched against the wrong team's schedule.
+`clients/nflreadpy_client.py` holds all raw nflreadpy access.
+`clients/anthropic_client.py` is raw SDK access only: one generic
+`parse_structured(model, system, user_content, output_model, max_tokens)`
+(`messages.parse()`, `temperature=0`). Prompts and Pydantic output schemas live
+in the stage modules that use them. Nothing else imports either library.
 
-`sources/defense.py`'s `defense(ctx)` returns `SourceResult[DefenseData]`
-(`position`, `rows: list[DefenseRow]`), the whole league table of fantasy points
-each defense allowed to `ctx.position`: REG games strictly before `ctx.week`,
-summed per `(opponent_team, week)` across that position's players, then averaged
-per defense (`DefenseRow`: `team`, `games`, `standard_pg`, `ppr_pg`). No rows
-(e.g. Week 1) is `status="empty"`.
+`__main__.py` is orchestration only: one natural-language `REQUEST` string ->
+`extract` -> `validate` -> `answer`. It loads `.env` via `load_dotenv()`, prints
+the request, then on `RequestValidationError` prints each error and exits 1
+without calling the answer stage; otherwise prints `answer.answer`. The `DEBUG`
+env var (`true`, shell or `.env`) is passed as `answer(validated, debug=...)`,
+which prints the rendered context it already built before the LLM call.
 
-The answer path ends in `answer.py`. Each player's inputs travel as a
-`PlayerInputs(ctx, recent_stats, schedule, defense)` dataclass. `render_context(parsed, players)`
-turns the `ParsedRequest` plus a `list[PlayerInputs]` into a text context (raw
-prompt, week, scoring format, then per player a `name (team)` header). When the
-schedule loaded, the header is followed by the target week (`Week 7: vs IND`,
-`Week 7: @ BAL`, or `Week 7: BYE`), then the matchup lines (below), then one line per past week 1..`ctx.week - 1`
-merging schedule and stats: `Week 6: BYE`; the stats line if the team played and
-the player has a stat row; `Week 4 vs MIA: did not play` if the team played and
-the player has none; `Week 6 vs SF: game not yet played, stats pending` if the
-game has no result yet. If `recent_stats` errored while the schedule loaded, the
-error line is rendered and played weeks show `stats unavailable` instead of
-"did not play". If the schedule is `empty`/`error`, an explicit line says so
-(with the error string) and rendering falls back to stats-only lines. Each stats
-line shows only the points for the request's scoring format, labeled (e.g.
-`fantasy_points (Half-PPR)=15.4`); Half-PPR is derived as the midpoint of
-standard and PPR, and an unrecognized format shows both standard and PPR,
-labeled. The matchup line, e.g.
+`config.py` pins `SEASON = 2026`, `CURRENT_WEEK = 7`,
+`DEFAULT_SCORING_FORMAT = "PPR"`, and the models `PARSER_MODEL` /
+`ANSWER_MODEL` (both `"claude-haiku-4-5"`).
+
+### Stage 1: resolution
+
+Request data model (`resolution/models.py`):
+- `ExtractedRequest` (Pydantic, the extraction LLM's output schema):
+  `players: list[ExtractedPlayer]` (`mention` as the user wrote it,
+  `player_id: str | None` = a `gsis_id`), `week: int | None`,
+  `scoring_format: str | None`.
+- `ValidatedRequest`: `raw_prompt`, `season`, `week`,
+  `scoring_format: ScoringFormat` (`Literal["PPR", "Half-PPR", "Standard"]`),
+  `players: list[ValidPlayer]` (`mention`, `player_id`, `full_name`,
+  `position`), `rejected: list[RejectedMention]` (`mention`, `reason`).
+- `RequestValidationError(errors: list[str])`.
+
+`resolution/roster.py`: `load_fantasy_roster(season)` loads `load_rosters`,
+filters to QB/RB/WR/TE/K with a non-null `gsis_id`, keeps the latest-week row
+per `gsis_id`, every status included (reserve/IR players are resolvable), and
+returns `dict[gsis_id, RosterPlayer]` (`gsis_id`, `full_name`, `team`,
+`position`, `status`) sorted by name — the lookup validation uses.
+`render_roster` renders a header plus one `gsis_id | full_name | team |
+position | status` line per player.
+
+`resolution/extract.py`: `extract(prompt) -> ExtractedRequest`. **Players are
+resolved by the LLM with the roster in context, not by string matching.** Two
+system blocks: instructions (with `SEASON` and `CURRENT_WEEK`), then the
+rendered roster in its own block with `cache_control` (ephemeral) so repeat
+calls hit the prompt cache. The instructions: map each mention to a roster
+`gsis_id`, trying hard on nicknames, typos, punctuation, and missing suffixes,
+null only with no reasonable match; resolve relative weeks from `CURRENT_WEEK`,
+return a stated week as written even if invalid (validation rejects it), null
+if none stated; normalize common scoring phrasings to `PPR` / `Half-PPR` /
+`Standard`, pass anything else through, null if none stated.
+
+`resolution/validate.py`: `validate(extracted, raw_prompt) -> ValidatedRequest`.
+Request-level errors are collected and raised together as
+`RequestValidationError` (nothing is answered): no players extracted; week
+outside 1 to 18; scoring format not one of the three; every mention rejected
+(one `could not resolve "<mention>": <reason>` error each). Defaults when null:
+week = `CURRENT_WEEK`, scoring format = `DEFAULT_SCORING_FORMAT`. Player-level
+(collected in `rejected`, the rest still answered): `player_id` null ->
+"no matching player found"; `player_id` not in the roster -> "unknown player
+id" (catches hallucinated ids); a repeated `player_id` keeps the first and
+drops the duplicate silently.
+
+### Stage 2: answering
+
+`answering/models.py` holds `ResolvedContext` (`player_id`, `player_name`,
+`team`, `position`, `season`, `week`, `scoring_format`), `SourceResult[T]`,
+`PlayerInputs(ctx, recent_stats, schedule, defense)`, and `Answer`.
+
+`answering/player_context.py`: `player_context(player, season, week,
+scoring_format) -> ResolvedContext`. Team comes from the player's roster row
+with the latest `week <= target week` (falling back to the earliest row);
+`player_name` and `position` come from the `ValidPlayer`.
+
+`answering/generate.py`: `answer(validated) -> Answer` is the stage entry point.
+`gather_inputs(validated)` builds a `PlayerInputs` per valid player;
+`render_context` turns them into the text context, sent via `parse_structured`
+(`config.ANSWER_MODEL`) with a `GeneratedAnswer` output schema. `Answer`:
+`answer: str` (markdown, format chosen by the LLM to fit the question) and
+`cited_doc_ids: list[str]` (always empty for now, reserved for a future news
+branch). **The LLM makes the start/sit call.**
+
+Sources: `answering/sources/*.py` implement `(ctx: ResolvedContext) ->
+SourceResult[T]`, where `T` is a rich, source-specific data type the branch
+defines itself — branches are not forced into a shared text-block output beyond
+the `SourceResult` envelope (`source`, `status`, `as_of`, `data`, `error`).
+- `recent_stats.py` (`RecentStatsData`): REG games strictly before `ctx.week`,
+  every game stamped with `"fantasy_points"` (standard) and
+  `"fantasy_points_ppr"` regardless of position, alongside position-specific raw
+  stats.
+- `schedule.py` (`ScheduleData`): `team` plus one `ScheduleWeek` (`week`,
+  `opponent`, `home`, `played`) per week 1..`ctx.week`, from that season's REG
+  games involving `ctx.team`. `opponent=None` means bye; `played` comes from
+  `result` being non-null. Known simplification: it uses the player's team as of
+  the target week, so a player traded mid-season gets past weeks matched against
+  the wrong team's schedule.
+- `defense.py` (`DefenseData`: `position`, `rows: list[DefenseRow]`): the league
+  table of fantasy points each defense allowed to `ctx.position`: REG games
+  strictly before `ctx.week`, summed per `(opponent_team, week)` across that
+  position's players, then averaged per defense (`DefenseRow`: `team`, `games`,
+  `standard_pg`, `ppr_pg`). No rows (e.g. Week 1) is `status="empty"`.
+
+`answering/context.py`: `render_context(validated, players)` renders the raw
+prompt, week, and scoring format, then one `Could not resolve "<mention>":
+<reason>` line per rejected mention, then per player a `name (team)` header.
+When the normalized mention (lowercase, straight quotes, collapsed whitespace)
+differs from the normalized full name, the header is followed by
+`Interpreted "CeeDee Lam" as CeeDee Lamb (DAL WR)`. When the schedule loaded,
+next comes the target week (`Week 7: vs IND`, `Week 7: @ BAL`, or `Week 7:
+BYE`), then the matchup lines (below), then one line per past week
+1..`ctx.week - 1` merging schedule and stats: `Week 6: BYE`; the stats line if
+the team played and the player has a stat row; `Week 4 vs MIA: did not play` if
+the team played and the player has none; `Week 6 vs SF: game not yet played,
+stats pending` if the game has no result yet. If `recent_stats` errored while
+the schedule loaded, the error line is rendered and played weeks show `stats
+unavailable` instead of "did not play". If the schedule is `empty`/`error`, an
+explicit line says so (with the error string) and rendering falls back to
+stats-only lines. Each stats line shows only the points for the request's
+scoring format, labeled (e.g. `fantasy_points (Half-PPR)=15.4`); Half-PPR is
+derived as the midpoint of standard and PPR. The matchup line, e.g.
 `Matchup: BAL has allowed 34.1 PPR points per game to WRs (rank 5 of 32, 1 = most allowed, league avg 30.2, 6 games)`,
 is followed by a fixed small-sample / not-opponent-adjusted caveat line. Its
-per-game value uses the same format rules (`_points_for_format`); for an
-unrecognized format one line pairs both: `28.0 Standard / 34.1 PPR points ...
-(rank 6 / 5 of 32, ... league avg 24.1 / 30.2, ...)`. Rank is competition-style
-(ties share a rank) over values rounded to the displayed 0.1; league avg is the
-mean of the teams' per-game values. Fallbacks: no line on a target-week BYE;
-`Matchup unavailable: no target-week opponent` when the schedule didn't load (it
-follows the schedule failure line); `Matchup unavailable: defense failed to load:
-<error>` / `Matchup unavailable: no points-allowed data for WRs before Week 7` for
-defense `error`/`empty`; `Matchup unavailable: no games found for <TEAM> defense`
-when the opponent has no row; and `Matchup unavailable for kickers ...` when
-`ctx.position == "K"`. Kickers (`position == "K"`) get raw stats with no points value plus one
-`fantasy points unavailable for kickers ...` line, since nflverse doesn't score
-kicking. `status="empty"` and `status="error"` render as explicit lines — a
-player never silently disappears. `answer(parsed, players)` sends that context to
-`clients/anthropic_client.py`'s `generate_answer` (`config.ANSWER_MODEL`,
-`temperature=0`, `messages.parse()`) and returns an `Answer` envelope
-(`contracts.py`): `answer: str` (markdown, format chosen by the LLM to fit the
-question) and `cited_doc_ids: list[str]` (always empty for now, reserved for a
-future news branch). **The LLM makes the start/sit call.** Its system prompt also
-says a player whose team is on bye in the target week cannot score that week, and
-that the matchup rank is one input among several and shouldn't outweigh a
-player's own usage and production.
-
-`resolution/player_resolver.py`'s `resolve_from_player(name, season, week, scoring_format)`
-resolves a player name via `load_rosters(season)`, restricted to fantasy
-positions (QB/RB/WR/TE/K) — picking the roster row with the latest
-`week <= target week` — and returns a `ResolvedContext` directly, including the
-roster `position` (used instead of the stats position because it exists for a
-player with no games yet). Raises on no
-match or on a name matching multiple distinct players (`gsis_id`s) — no silent wrong
-answers yet. `resolution/request_parser.py`'s `parse_request(prompt)` turns a
-natural-language prompt into a `ParsedRequest` (player names, week, scoring format)
-via an LLM structured-extraction call (`clients/anthropic_client.py`,
-`config.PARSER_MODEL`, `temperature=0`); only week/scoring_format are defaulted
-(`config.CURRENT_WEEK`, `"PPR"`) when the LLM doesn't extract them — at least one
-player name is required, raises otherwise. Both wired into `__main__.py`, which is
-driven entirely by one natural-language `REQUEST` string, loads `.env` via
-`load_dotenv()`, and prints the request and `answer.answer`, plus the rendered answer context
-when the `DEBUG` env var is `true` (shell or `.env`).
-
-`config.py` pins `SEASON = 2026`, `CURRENT_WEEK = 7`, and the models
-`PARSER_MODEL` / `ANSWER_MODEL` (both `"claude-haiku-4-5"`).
+per-game value uses the same format rule (`_points_for_format`). Rank is
+competition-style (ties share a rank) over values rounded to the displayed 0.1;
+league avg is the mean of the teams' per-game values. Fallbacks: no line on a
+target-week BYE; `Matchup unavailable: no target-week opponent` when the
+schedule didn't load (it follows the schedule failure line); `Matchup
+unavailable: defense failed to load: <error>` / `Matchup unavailable: no
+points-allowed data for WRs before Week 7` for defense `error`/`empty`;
+`Matchup unavailable: no games found for <TEAM> defense` when the opponent has
+no row; and `Matchup unavailable for kickers ...` when `ctx.position == "K"`.
+Kickers get raw stats with no points value plus one `fantasy points unavailable
+for kickers ...` line, since nflverse doesn't score kicking. `status="empty"`
+and `status="error"` render as explicit lines — a player never silently
+disappears.
 
 Working mode: **Build** — Sid designs, Claude implements to spec.
 
 ## LLM usage
 
-Two LLM touch points, both through `clients/anthropic_client.py` at
-`temperature=0` with structured output (`messages.parse()` + a Pydantic model):
-1. `resolution/request_parser.py` — turns the raw natural-language prompt into a
-   structured `ParsedRequest` (player names, week, scoring format).
-   Model: `config.PARSER_MODEL`.
-2. `answer.py` — **makes the start/sit decision.** Gets the rendered context
-   (request + per-player schedule, matchup, and recent stats) and returns the `Answer` envelope.
-   Model: `config.ANSWER_MODEL`. The system prompt tells it to say plainly when a
-   player's data is missing or failed to load rather than fill the gap, that a
-   player on bye in the target week cannot score, and that the matchup rank
-   shouldn't outweigh a player's own usage and production.
+Two LLM touch points, both through `clients/anthropic_client.py`'s
+`parse_structured` (`temperature=0`, `messages.parse()` + a Pydantic model). The
+prompts and output schemas live in the calling stage modules:
+1. `resolution/extract.py` — turns the raw natural-language prompt into an
+   `ExtractedRequest` (player mentions **resolved to `gsis_id`s** against the
+   season's fantasy roster, week, scoring format). The roster (~21k tokens for
+   2026) is its own prompt-cached system block. Model: `config.PARSER_MODEL`.
+   Its output is untrusted until `resolution/validate.py` checks it.
+2. `answering/generate.py` — **makes the start/sit decision.** Gets the rendered
+   context (request, unresolved mentions, per-player name interpretation,
+   schedule, matchup, and recent stats) and returns the `Answer` envelope.
+   Model: `config.ANSWER_MODEL`. The system prompt tells it to say plainly when
+   a player's data is missing or failed to load rather than fill the gap, that
+   a player on bye in the target week cannot score, that the matchup rank
+   shouldn't outweigh a player's own usage and production, and to mention
+   unresolved players and any name interpretation it relied on.
 
 ## Data Sources
 
@@ -165,7 +222,7 @@ The **body is authoritative** (current state); the log is provenance.
 - 2026-07-04 — Added `clients/` subfolder for raw nflreadpy access (both new roster
   access and the existing player-stats call moved in); `sources/`/`resolution/` no
   longer call nflreadpy directly.
-- 2026-07-04 — Player-name resolution rule: on a multi-team season for one player, use
+- [superseded] 2026-07-04 — Player-name resolution rule: on a multi-team season for one player, use
   the roster row with the latest week <= target week; on a name matching multiple
   distinct players, raise rather than guess.
 - 2026-07-04 — Test framework: pytest, in `tests/`. Client calls mocked at the
@@ -196,7 +253,7 @@ The **body is authoritative** (current state); the log is provenance.
   stat to every game (not position-gated), giving `features/recent_stats.py` a
   `recent_stats.avg_fantasy_points_ppr` feature — the signal `decision.py`'s
   placeholder uses.
-- 2026-07-17 — Request parsing is a third LLM touch point, distinct from the
+- [superseded] 2026-07-17 — Request parsing is a third LLM touch point, distinct from the
   `features/`-confined rule above (see "LLM usage"): `resolution/request_parser.py`
   turns a natural-language prompt into a `ParsedRequest` via
   `clients/anthropic_client.py` (`claude-haiku-4-5`, `temperature=0`, structured
@@ -220,7 +277,7 @@ The **body is authoritative** (current state); the log is provenance.
   format, labeled with that format. `sources/recent_stats.py` now also stamps
   standard `fantasy_points`; Half-PPR is derived as `(standard + ppr) / 2`; an
   unrecognized format falls back to showing both, labeled.
-- 2026-10-19 — Player resolution only considers fantasy roster positions
+- [superseded] 2026-10-19 — Player resolution only considers fantasy roster positions
   (QB/RB/WR/TE/K), so defensive namesakes (e.g. a CLE LB "Justin Jefferson") no
   longer raise `AmbiguousPlayerNameError`. OL, P, LS and defense excluded.
 - 2026-10-19 — Deleted the off-path ranking: `features/`, `feature_vector.py`,
@@ -248,7 +305,7 @@ The **body is authoritative** (current state); the log is provenance.
   doesn't score kicking.
 - 2026-10-19 — `DEBUG=true` (env var or `.env`) makes `__main__.py` print the
   rendered answer context before the answer.
-- 2026-10-24 — `ResolvedContext` gains `position`, taken from the roster row in
+- [superseded] 2026-10-24 — `ResolvedContext` gains `position`, taken from the roster row in
   `resolve_from_player` (exists even for a player with no games yet).
 - 2026-10-24 — Added `sources/defense.py` (`defense(ctx) -> SourceResult[DefenseData]`):
   league table of standard/PPR points each defense allowed per game to `ctx.position`,
@@ -262,3 +319,39 @@ The **body is authoritative** (current state); the log is provenance.
   empty/error, opponent missing, and kickers.
 - 2026-10-24 — Answer system prompt: the matchup rank is one input among several
   and shouldn't outweigh a player's own usage and production.
+- 2026-10-24 — v0.8 request data model: extract (LLM fills `ExtractedRequest`) ->
+  validate (deterministic, `ValidatedRequest` or `RequestValidationError`) ->
+  answer (runs only on a `ValidatedRequest`).
+- 2026-10-24 — Players are resolved by the extraction LLM with the season's
+  fantasy roster in context (returns `gsis_id`s), not by string matching. It tries
+  hard on nicknames, typos, punctuation, and missing suffixes; null only with no
+  real idea. Supersedes the 2026-07-04 name-resolution and 2026-07-17
+  request-parsing entries. `player_resolver.py` and `request_parser.py` removed.
+- 2026-10-24 — Fantasy roster context: QB/RB/WR/TE/K, one row per `gsis_id`
+  (latest week), every status, one `gsis_id | full_name | team | position |
+  status` line each, in its own `cache_control` system block. Supersedes the
+  2026-10-19 fantasy-positions resolution entry (the filter carries over).
+- 2026-10-24 — Partial answers: if some mentions fail validation, answer the valid
+  players and state which mentions couldn't be resolved and why (rendered
+  `Could not resolve ...` lines; answer prompt told to mention them).
+- 2026-10-24 — Validation: week must be 1 to 18 and scoring format one of `PPR`,
+  `Half-PPR`, `Standard` (request-level, along with no players and all mentions
+  rejected); null/unknown `player_id` rejected per player; duplicate ids dropped
+  silently. Defaults: `CURRENT_WEEK`, `DEFAULT_SCORING_FORMAT`.
+- 2026-10-24 — Stage split: `resolution/` (models, roster, extract, validate) and
+  `answering/` (models, player_context, sources, context, generate). `answering/`
+  may import `resolution.models`; `resolution/` never imports `answering/`.
+  `contracts.py` and `answer.py` removed; their types moved to the owning stage.
+- 2026-10-24 — `clients/anthropic_client.py` is raw SDK access only: one generic
+  `parse_structured`. Prompts and output schemas moved into `resolution/extract.py`
+  and `answering/generate.py`.
+- 2026-10-24 — `ResolvedContext` is built in `answering/player_context.py` from a
+  `ValidPlayer`: team from the latest roster row at or before the target week,
+  `position` from the `ValidPlayer`. Supersedes the earlier 2026-10-24
+  `resolve_from_player` position entry.
+- 2026-10-24 — Answer context adds an `Interpreted "<mention>" as <name> (<TEAM>
+  <POS>)` line when the normalized mention differs from the roster name; the
+  "unrecognized format shows both" rendering branches are removed since the
+  format is now always valid.
+- 2026-10-24 — `DEBUG` is threaded into `answer(validated, debug=...)`, which
+  prints the context it built, so sources are never loaded twice for the print.

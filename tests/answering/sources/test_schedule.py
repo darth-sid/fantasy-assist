@@ -1,8 +1,8 @@
 import polars as pl
 
-import ffassistant.sources.schedule as schedule_module
-from ffassistant.contracts import ResolvedContext
-from ffassistant.sources.schedule import ScheduleWeek, schedule
+import ffassistant.answering.sources.schedule as schedule_module
+from ffassistant.answering.models import ResolvedContext
+from ffassistant.answering.sources.schedule import ScheduleWeek, schedule
 
 CTX = ResolvedContext(
     player_id="00-0036322",

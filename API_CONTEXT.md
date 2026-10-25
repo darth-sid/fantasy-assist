@@ -29,25 +29,29 @@ clears it.
 
 ## Functions currently used in this repo
 
-All calls now go through `clients/nflreadpy_client.py` — `sources/` and `resolution/`
+All calls now go through `clients/nflreadpy_client.py` — `answering/` and `resolution/`
 never import `nflreadpy` directly.
 
-- `load_player_stats(seasons, summary_level="week")` — used by `sources/recent_stats.py`
+- `load_player_stats(seasons, summary_level="week")` — used by `answering/sources/recent_stats.py`
   via `clients.nflreadpy_client.load_player_stats`. Filtered on `player_id`,
   `season_type == "REG"`, sorted by `week`. Columns relied on: `player_id`,
   `season_type`, `week`, `position`, `opponent_team`, plus stat columns
   (`completions`, `attempts`, `passing_yards`, `passing_tds`, `passing_interceptions`,
   `carries`, `rushing_yards`, `rushing_tds`, `receptions`, `targets`, `receiving_yards`,
   `receiving_tds`, `fg_made`, `fg_att`, `pat_made`).
-  Also used by `sources/defense.py`: points allowed is derived by filtering on
+  Also used by `answering/sources/defense.py`: points allowed is derived by filtering on
   `season_type`, `week`, and `position`, then grouping by `opponent_team` (summed
   per `(opponent_team, week)`, then averaged per defense). So `load_player_stats`
   is now called by two sources per player; nflreadpy's in-memory cache absorbs
   the repeat.
-- `load_rosters(seasons)` — used by `resolution/player_resolver.py` via
-  `clients.nflreadpy_client.load_rosters`. Columns relied on: `full_name`, `gsis_id`,
-  `team`, `week`, `position`. See gotchas below — this is not a simple one-row-per-player table.
-- `load_schedules(seasons)` — used by `sources/schedule.py` via
+- `load_rosters(seasons)` — used via `clients.nflreadpy_client.load_rosters` by
+  `resolution/roster.py` (the fantasy roster the extraction LLM resolves against,
+  and the `gsis_id` lookup validation checks) and by `answering/player_context.py`
+  (team as of the target week). Columns relied on: `full_name`, `gsis_id`, `team`,
+  `week`, `position`, `status`. Loaded up to three times per run (extract,
+  validate, player context); the in-memory cache absorbs the repeats. See gotchas
+  below — this is not a simple one-row-per-player table.
+- `load_schedules(seasons)` — used by `answering/sources/schedule.py` via
   `clients.nflreadpy_client.load_schedules` (always passed a single season, so the
   all-seasons default never applies). Filtered on `game_type == "REG"` and the
   player's team as `home_team` or `away_team`. Columns relied on: `game_type`,
@@ -103,15 +107,21 @@ list[int]` = specific season(s), unless noted otherwise.
   cases in the 2023 data alone, e.g. two different players both named "Lamar
   Jackson", distinguishable only by `gsis_id`). Any name-keyed lookup must check for
   multiple distinct `gsis_id`s per name and handle the collision explicitly rather
-  than picking one silently. `resolution/player_resolver.py` raises
-  `AmbiguousPlayerNameError` in this case.
+  than picking one silently. Resolution no longer keys on names (the LLM picks a
+  `gsis_id` from the roster), and within 2026 fantasy positions no two players
+  share a `full_name` (verified 2026-10-24), but a future season could.
 - `gsis_id` is the right column to use as `player_id` — format matches what
-  `sources/recent_stats.py` already expects (e.g. `"00-0036322"`).
+  `answering/sources/recent_stats.py` already expects (e.g. `"00-0036322"`).
 - Roster `status` codes seen: `ACT`, `DEV`, `CUT`, `RES`, `INA`, `TRC`, `TRD`, `EXE`,
-  `PUP`, `TRT` (and others). `resolution/player_resolver.py` currently ignores
-  `status` entirely and just picks the latest row at/before the target week — a
-  known simplification, not yet a problem in practice since same-player multi-team
-  rows didn't actually occur in the 2023 season data we tested against.
+  `PUP`, `TRT`, `RET` (and others). The fantasy roster context includes every
+  status (reserve/IR players must be resolvable) and shows it to the LLM.
+  `answering/player_context.py` ignores `status` and just picks the latest row
+  at/before the target week for the team.
+- The 2026 fantasy roster (QB/RB/WR/TE/K, one row per `gsis_id`) is 997 players.
+  One row has a null `gsis_id` (Al-Jay Henderson, NYJ RB, DEV) and is dropped, so
+  996 are rendered: ~43.6k characters, **21,132 tokens** as measured with
+  `count_tokens` on `claude-haiku-4-5` (2026-10-24). It sits in its own cached
+  system block in `resolution/extract.py`.
 - The latest week's `load_player_stats` rows can be **incomplete** until Monday
   night games are processed. Observed 2026-10-19: Week 6 had ~911 rows vs ~1,100
   for earlier weeks. Treat the most recent week as possibly partial.
@@ -121,18 +131,18 @@ list[int]` = specific season(s), unless noted otherwise.
 - `load_rosters` `position` is coarse: `QB`/`RB`/`WR`/`TE`/`OL`/`K`/`P`/`LS` and
   defense `DB`/`LB`/`DL` (finer detail is in `depth_chart_position`). Name
   collisions often cross offense/defense — 2026 has two "Justin Jefferson"s
-  (`00-0036322` MIN WR, `00-0041075` CLE LB rookie); `player_resolver.py` filters
-  to QB/RB/WR/TE/K before matching.
+  (`00-0036322` MIN WR, `00-0041075` CLE LB rookie); `resolution/roster.py`
+  filters to QB/RB/WR/TE/K.
 - `load_schedules` `result` (home score minus away score) is **null for unplayed
-  games**, which is how `sources/schedule.py` sets `played`. A week before the
+  games**, which is how `answering/sources/schedule.py` sets `played`. A week before the
   target week can still be null if the data hasn't caught up.
 - `load_player_stats` `fantasy_points` / `fantasy_points_ppr` **do not score
   kicking**. All 184 kicker rows in 2026 (as of 2026-10-19) have
-  `fantasy_points = 0.0`. `answer.py` shows kickers' raw stats with no points.
+  `fantasy_points = 0.0`. `answering/context.py` shows kickers' raw stats with no points.
 - `load_teams` includes historical codes like `OAK`, `SD`, and `STL`, so it should
   not be used to derive byes (a team "missing" from a week would include defunct
   franchises). Byes come from a team's own schedule having no game that week.
-- `sources/schedule.py` looks up the schedule by `ctx.team`, the player's team as of
+- `answering/sources/schedule.py` looks up the schedule by `ctx.team`, the player's team as of
   the target week. A player traded mid-season gets past weeks matched against the
   wrong team's schedule (e.g. "did not play" for weeks they played elsewhere).
   Known, not yet solved.

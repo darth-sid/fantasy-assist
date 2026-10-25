@@ -1,24 +1,46 @@
-import ffassistant.answer as answer_module
-from ffassistant.answer import PlayerInputs, answer, render_context
-from ffassistant.clients.anthropic_client import GeneratedAnswer
-from ffassistant.contracts import Answer, ParsedRequest, ResolvedContext, SourceResult
-from ffassistant.sources.defense import DefenseData, DefenseRow
-from ffassistant.sources.recent_stats import GameLine, RecentStatsData
-from ffassistant.sources.schedule import ScheduleData, ScheduleWeek
+from ffassistant.answering.context import render_context
+from ffassistant.answering.models import PlayerInputs, ResolvedContext, SourceResult
+from ffassistant.answering.sources.defense import DefenseData, DefenseRow
+from ffassistant.answering.sources.recent_stats import GameLine, RecentStatsData
+from ffassistant.answering.sources.schedule import ScheduleData, ScheduleWeek
+from ffassistant.resolution.models import RejectedMention, ValidatedRequest, ValidPlayer
 
 
-def _parsed() -> ParsedRequest:
-    return ParsedRequest(
+def _validated(
+    players: list[PlayerInputs],
+    mentions: dict[str, str] | None = None,
+    rejected: list[RejectedMention] | None = None,
+) -> ValidatedRequest:
+    mentions = mentions or {}
+    return ValidatedRequest(
         raw_prompt="Lamb or Jefferson?",
-        player_names=["CeeDee Lamb", "Justin Jefferson"],
+        season=2026,
         week=7,
         scoring_format="PPR",
+        players=[
+            ValidPlayer(
+                mention=mentions.get(p.ctx.player_name, p.ctx.player_name),
+                player_id=p.ctx.player_id,
+                full_name=p.ctx.player_name,
+                position=p.ctx.position,
+            )
+            for p in players
+        ],
+        rejected=rejected or [],
     )
+
+
+def _render(
+    players: list[PlayerInputs],
+    mentions: dict[str, str] | None = None,
+    rejected: list[RejectedMention] | None = None,
+) -> str:
+    return render_context(_validated(players, mentions, rejected), players)
 
 
 def _ctx(name: str, team: str, scoring_format: str = "PPR", position: str = "WR") -> ResolvedContext:
     return ResolvedContext(
-        player_id="00-0000001",
+        player_id=f"id-{name}",
         player_name=name,
         team=team,
         position=position,
@@ -119,7 +141,7 @@ def _line_with(context: str, needle: str) -> str:
 
 
 def test_render_context_includes_request_header():
-    context = render_context(_parsed(), [])
+    context = _render([])
 
     assert "Lamb or Jefferson?" in context
     assert "7" in _line_with(context, "Week")
@@ -127,7 +149,7 @@ def test_render_context_includes_request_header():
 
 
 def test_render_context_ok_renders_one_row_per_game():
-    context = render_context(_parsed(), [_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result())])
+    context = _render([_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result())])
 
     week_1 = _line_with(context, "NYG")
     week_2 = _line_with(context, "PHI")
@@ -138,9 +160,7 @@ def test_render_context_ok_renders_one_row_per_game():
 
 
 def test_render_context_uses_standard_points_for_standard_scoring():
-    context = render_context(
-        _parsed(), [_inputs(_ctx("CeeDee Lamb", "DAL", "Standard"), _ok_result())]
-    )
+    context = _render([_inputs(_ctx("CeeDee Lamb", "DAL", "Standard"), _ok_result())])
 
     week_1 = _line_with(context, "NYG")
     assert "fantasy_points (Standard)=12.4" in week_1
@@ -148,32 +168,18 @@ def test_render_context_uses_standard_points_for_standard_scoring():
 
 
 def test_render_context_derives_half_ppr_points():
-    context = render_context(
-        _parsed(), [_inputs(_ctx("CeeDee Lamb", "DAL", "Half-PPR"), _ok_result())]
-    )
+    context = _render([_inputs(_ctx("CeeDee Lamb", "DAL", "Half-PPR"), _ok_result())])
 
     week_1 = _line_with(context, "NYG")
     assert "fantasy_points (Half-PPR)=15.4" in week_1
     assert "12.4" not in week_1 and "18.4" not in week_1
 
 
-def test_render_context_shows_both_labeled_for_unknown_format():
-    context = render_context(
-        _parsed(), [_inputs(_ctx("CeeDee Lamb", "DAL", "Six-Point Passing TD"), _ok_result())]
-    )
-
-    week_1 = _line_with(context, "NYG")
-    assert "fantasy_points (Standard)=12.4" in week_1
-    assert "fantasy_points (PPR)=18.4" in week_1
-
-
 def test_render_context_empty_without_schedule_says_no_games():
     empty = SourceResult(source="recent_stats", status="empty", as_of="Week 7")
     no_schedule = SourceResult(source="schedule", status="empty", as_of="Week 7")
 
-    context = render_context(
-        _parsed(), [_inputs(_ctx("CeeDee Lamb", "DAL"), empty, no_schedule)]
-    )
+    context = _render([_inputs(_ctx("CeeDee Lamb", "DAL"), empty, no_schedule)])
 
     line = _line_with(context.lower(), "no games")
     assert "DAL" in _line_with(context, "CeeDee Lamb")
@@ -185,7 +191,7 @@ def test_render_context_error_includes_error_string():
         source="recent_stats", status="error", as_of="Week 7", error="HTTPError: 503"
     )
 
-    context = render_context(_parsed(), [_inputs(_ctx("Justin Jefferson", "MIN"), error)])
+    context = _render([_inputs(_ctx("Justin Jefferson", "MIN"), error)])
 
     assert "MIN" in _line_with(context, "Justin Jefferson")
     assert "HTTPError: 503" in context
@@ -195,37 +201,20 @@ def test_render_context_keeps_every_player():
     empty = SourceResult(source="recent_stats", status="empty", as_of="Week 7")
     error = SourceResult(source="recent_stats", status="error", as_of="Week 7", error="boom")
 
-    context = render_context(
-        _parsed(),
+    context = _render(
         [
             _inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result()),
             _inputs(_ctx("Justin Jefferson", "MIN"), empty),
             _inputs(_ctx("Ja'Marr Chase", "CIN"), error),
-        ],
+        ]
     )
 
     for name, team in [("CeeDee Lamb", "DAL"), ("Justin Jefferson", "MIN"), ("Ja'Marr Chase", "CIN")]:
         assert team in _line_with(context, name)
 
 
-def test_answer_builds_answer_from_generated_output(monkeypatch):
-    seen_contexts = []
-
-    def fake_generate_answer(context):
-        seen_contexts.append(context)
-        return GeneratedAnswer(answer="Start **Lamb**.", cited_doc_ids=[])
-
-    monkeypatch.setattr(answer_module, "generate_answer", fake_generate_answer)
-    players = [_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result())]
-
-    result = answer(_parsed(), players)
-
-    assert result == Answer(answer="Start **Lamb**.", cited_doc_ids=[])
-    assert seen_contexts == [render_context(_parsed(), players)]
-
-
 def test_target_week_home_game():
-    context = render_context(_parsed(), [_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result())])
+    context = _render([_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result())])
 
     assert "Week 7: vs IND" in context.splitlines()
 
@@ -233,7 +222,7 @@ def test_target_week_home_game():
 def test_target_week_away_game():
     sched = _schedule_result(ScheduleWeek(week=7, opponent="BAL", home=False, played=False))
 
-    context = render_context(_parsed(), [_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result(), sched)])
+    context = _render([_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result(), sched)])
 
     assert "Week 7: @ BAL" in context.splitlines()
 
@@ -241,13 +230,13 @@ def test_target_week_away_game():
 def test_target_week_bye():
     sched = _schedule_result(ScheduleWeek(week=7, opponent=None, home=None, played=False))
 
-    context = render_context(_parsed(), [_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result(), sched)])
+    context = _render([_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result(), sched)])
 
     assert "Week 7: BYE" in context.splitlines()
 
 
 def test_target_week_line_follows_header():
-    context = render_context(_parsed(), [_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result())])
+    context = _render([_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result())])
 
     lines = context.splitlines()
     header = lines.index("## CeeDee Lamb (DAL)")
@@ -255,13 +244,13 @@ def test_target_week_line_follows_header():
 
 
 def test_past_bye_week_line():
-    context = render_context(_parsed(), [_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result())])
+    context = _render([_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result())])
 
     assert "Week 6: BYE" in context.splitlines()
 
 
 def test_played_week_without_stat_row_is_did_not_play():
-    context = render_context(_parsed(), [_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result())])
+    context = _render([_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result())])
 
     assert "Week 4 vs MIA: did not play" in context.splitlines()
 
@@ -269,13 +258,13 @@ def test_played_week_without_stat_row_is_did_not_play():
 def test_unplayed_past_week_is_stats_pending():
     sched = _schedule_result(ScheduleWeek(week=6, opponent="SF", home=True, played=False))
 
-    context = render_context(_parsed(), [_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result(), sched)])
+    context = _render([_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result(), sched)])
 
     assert "Week 6 vs SF: game not yet played, stats pending" in context.splitlines()
 
 
 def test_one_line_per_past_week_in_order():
-    context = render_context(_parsed(), [_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result())])
+    context = _render([_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result())])
 
     week_lines = [line for line in context.splitlines() if line.startswith("Week ") and ":" in line]
     assert [line.split(":")[0].split()[1] for line in week_lines] == ["7", "1", "2", "3", "4", "5", "6"]
@@ -286,7 +275,7 @@ def test_stats_error_with_schedule_keeps_schedule_lines():
         source="recent_stats", status="error", as_of="Week 7", error="HTTPError: 503"
     )
 
-    context = render_context(_parsed(), [_inputs(_ctx("CeeDee Lamb", "DAL"), error)])
+    context = _render([_inputs(_ctx("CeeDee Lamb", "DAL"), error)])
 
     lines = context.splitlines()
     assert "recent_stats failed to load: HTTPError: 503" in lines
@@ -300,9 +289,7 @@ def test_schedule_error_falls_back_to_stats_only():
         source="schedule", status="error", as_of="Week 7", error="HTTPError: 502"
     )
 
-    context = render_context(
-        _parsed(), [_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result(), sched_error)]
-    )
+    context = _render([_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result(), sched_error)])
 
     lines = context.splitlines()
     assert "HTTPError: 502" in _line_with(context, "schedule")
@@ -312,9 +299,7 @@ def test_schedule_error_falls_back_to_stats_only():
 
 
 def test_kicker_renders_raw_stats_without_points():
-    context = render_context(
-        _parsed(), [_inputs(_ctx("Brandon Aubrey", "DAL", position="K"), _kicker_result())]
-    )
+    context = _render([_inputs(_ctx("Brandon Aubrey", "DAL", position="K"), _kicker_result())])
 
     week_1 = _line_with(context, "NYG")
     assert "fg_made=3" in week_1 and "fg_att=4" in week_1 and "pat_made=2" in week_1
@@ -332,7 +317,7 @@ def _matchup_context(
 ) -> list[str]:
     sched = _schedule_result(ScheduleWeek(week=7, opponent=opponent, home=True, played=False))
     ctx = _ctx("CeeDee Lamb", "DAL", scoring_format)
-    return render_context(_parsed(), [_inputs(ctx, _ok_result(), sched, defense)]).splitlines()
+    return _render([_inputs(ctx, _ok_result(), sched, defense)]).splitlines()
 
 
 def _matchup_line(lines: list[str]) -> str:
@@ -368,13 +353,6 @@ def test_matchup_line_half_ppr_ranks_on_midpoint():
     )
 
 
-def test_matchup_line_unknown_format_shows_both_labeled():
-    assert _matchup_line(_matchup_context("Six-Point Passing TD")) == (
-        "Matchup: IND has allowed 24.0 Standard / 34.0 PPR points per game to WRs "
-        "(rank 3 / 2 of 4, 1 = most allowed, league avg 23.0 / 31.0, 6 games)"
-    )
-
-
 def test_matchup_rank_one_is_most_allowed():
     assert "(rank 1 of 4," in _matchup_line(_matchup_context(opponent="BAL"))
     assert "(rank 4 of 4," in _matchup_line(_matchup_context(opponent="NYG"))
@@ -404,9 +382,7 @@ def test_no_matchup_line_on_bye():
 def test_matchup_unavailable_when_schedule_fails():
     sched_error = SourceResult(source="schedule", status="error", as_of="Week 7", error="boom")
 
-    context = render_context(
-        _parsed(), [_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result(), sched_error)]
-    )
+    context = _render([_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result(), sched_error)])
 
     assert "Matchup unavailable: no target-week opponent" in context.splitlines()
 
@@ -434,10 +410,39 @@ def test_matchup_unavailable_when_opponent_missing_from_table():
 
 
 def test_kicker_gets_matchup_unavailable_line():
-    context = render_context(
-        _parsed(), [_inputs(_ctx("Brandon Aubrey", "DAL", position="K"), _kicker_result())]
-    )
+    context = _render([_inputs(_ctx("Brandon Aubrey", "DAL", position="K"), _kicker_result())])
 
     lines = context.splitlines()
     assert "Matchup unavailable for kickers (kicking is not scored in the source data)" in lines
     assert not any(line.startswith("Matchup:") for line in lines)
+
+
+def test_rejected_mentions_render_after_header():
+    rejected = [
+        RejectedMention(mention="Puka Nakua", reason="no matching player found"),
+        RejectedMention(mention="Joe Nobody", reason="unknown player id"),
+    ]
+
+    lines = _render([], rejected=rejected).splitlines()
+
+    assert lines[3:5] == [
+        'Could not resolve "Puka Nakua": no matching player found',
+        'Could not resolve "Joe Nobody": unknown player id',
+    ]
+
+
+def test_interpreted_line_when_mention_differs_from_name():
+    players = [_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result())]
+
+    lines = _render(players, mentions={"CeeDee Lamb": "CeeDee Lam"}).splitlines()
+
+    header = lines.index("## CeeDee Lamb (DAL)")
+    assert lines[header + 1] == 'Interpreted "CeeDee Lam" as CeeDee Lamb (DAL WR)'
+
+
+def test_no_interpreted_line_when_mention_matches_after_normalizing():
+    players = [_inputs(_ctx("Ja'Marr Chase", "CIN"), _ok_result())]
+
+    context = _render(players, mentions={"Ja'Marr Chase": "  ja’marr   CHASE "})
+
+    assert "Interpreted" not in context

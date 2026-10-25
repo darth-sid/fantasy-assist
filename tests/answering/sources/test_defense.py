@@ -1,9 +1,9 @@
 import polars as pl
 import pytest
 
-import ffassistant.sources.defense as defense_module
-from ffassistant.contracts import ResolvedContext
-from ffassistant.sources.defense import DefenseRow, defense
+import ffassistant.answering.sources.defense as defense_module
+from ffassistant.answering.models import ResolvedContext
+from ffassistant.answering.sources.defense import DefenseRow, defense
 
 CTX = ResolvedContext(
     player_id="00-0036322",

@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 import polars as pl
 
+from ffassistant.answering.models import ResolvedContext, SourceResult
 from ffassistant.clients.nflreadpy_client import load_player_stats
-from ffassistant.contracts import ResolvedContext, SourceResult
 
 # Stat columns relevant per position group.
 _POSITION_COLS: dict[str, list[str]] = {
