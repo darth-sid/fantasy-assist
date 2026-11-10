@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Generic</title>
+<item>
+<title>Parsons &amp;amp; Packers</title>
+<link>  https://example.com/a#comments </link>
+<description>&lt;p&gt;Green &lt;b&gt;Bay&lt;/b&gt; hopes   Parsons returns &amp;amp; plays.&lt;/p&gt;</description>
+<pubDate>Fri, 6 Nov 2026 20:04:04 -0500</pubDate>
+</item>
+<item>
+<title>No date</title>
+<link>https://example.com/b</link>
+<description>Undated.</description>
+</item>
+<item>
+<title>No link</title>
+<description>Linkless.</description>
+<pubDate>Fri, 6 Nov 2026 20:04:04 -0500</pubDate>
+</item>
+<item>
+<title>Duplicate of a</title>
+<link>https://example.com/a</link>
+<description>Same URL.</description>
+<pubDate>Fri, 6 Nov 2026 20:10:00 -0500</pubDate>
+</item>
+</channel></rss>

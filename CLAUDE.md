@@ -26,10 +26,11 @@ ask Sid rather than writing it.
 
 Structure: all code lives in the `ffassistant/` package (run with
 `python -m ffassistant`; imports are absolute, `from ffassistant.x import ...`),
-split into two stages plus shared plumbing: `resolution/` (stage 1, prompt ->
+split into three stages plus shared plumbing: `ingest/` (stage 0, feeds -> stored
+news items, independent of the other two), `resolution/` (stage 1, prompt ->
 `ValidatedRequest`), `answering/` (stage 2, `ValidatedRequest` -> `Answer`, with
 `answering/sources/` inside it), `clients/`, and flat `config.py` /
-`__main__.py`. `tests/` mirrors the package's folders (`tests/resolution/`,
+`__main__.py`. `tests/` mirrors the package's folders (`tests/ingest/`, `tests/resolution/`,
 `tests/answering/`, `tests/answering/sources/`). Paths below are relative to
 `ffassistant/`.
 
@@ -65,6 +66,48 @@ rendered context it already built before the LLM call.
 `config.py` pins `SEASON = 2026`, `DEFAULT_SCORING_FORMAT = "PPR"`, and the
 models `PARSER_MODEL` / `ANSWER_MODEL` (both `"claude-haiku-4-5"`). There is no
 current-week pin; the current week comes from the schedule at run time.
+
+### Stage 0: ingest
+
+`ingest/` is a standalone collector (`python -m ffassistant.ingest`): one poll of
+every feed in `config.FEEDS` per invocation, then exit. Scheduling is external
+(cron/launchd); poll frequency is not in config. It builds the news history that
+retrieval will later read. **Dependency rule:** `ingest/` imports nothing from
+`resolution/` or `answering/`, and they import nothing from it.
+
+- `clients/rss_client.py`: `fetch_feed(url) -> bytes`, raw HTTP only (`requests`,
+  20 s timeout, `ffassistant/0.1` User-Agent; non-200 raises).
+- `ingest/store.py` is the only module that touches `items.jsonl`:
+  `load_doc_ids()`, `append_items(items)`, `iter_items()` (retrieval's read
+  interface; unused by ingest itself). The path is `config.NEWS_DIR`
+  (`data/news`) resolved against the repo root, so cwd doesn't matter under
+  cron. `data/` is gitignored.
+- `ingest/poll.py`: loads stored `doc_id`s, then per feed independently
+  (a failure doesn't stop the others) fetches, parses with `feedparser`
+  (malformed-but-has-entries -> warning and use them; no entries -> logged),
+  builds `NewsItem`s, skips entries with no link and any `doc_id` already
+  stored or seen earlier in the poll, and appends. One status line per feed
+  (`rotowire: 5 fetched, 2 new` / `espn: error: <reason>`); exit 1 only if every
+  feed failed. A second run immediately after adds nothing.
+- `ingest/overrides.py`: two independent per-feed override registries keyed by
+  the `FEEDS` key; a feed with no entry uses the defaults. `DATE_PARSERS[key]`
+  (raw date string -> aware datetime) replaces feedparser's date parse, and
+  `ID_KEYS[key]` ((url, raw date) -> string hashed into `doc_id`) replaces the
+  default of the URL alone. **Adding a feed:** fetch it and check item count,
+  date span, description quality, link uniqueness, and whether feedparser parses
+  its dates correctly; register an override only for what fails; record the
+  findings in API_CONTEXT.md.
+- Storage: `data/news/items.jsonl`, one `NewsItem` per line, append-only, the
+  only file the collector writes. Items are kept forever; no raw XML snapshots.
+- `NewsItem`: `doc_id` (first 16 hex of sha256 of the normalized URL; for
+  feeds with an `ID_KEYS` override, of that override's key; RotoWire: `url + "\n" + raw date string`), `url` (stripped,
+  `#fragment` removed, nothing else), `source` (the `FEEDS` key), `title` and
+  `summary` (plain text: tags stripped, entities decoded, whitespace
+  collapsed), `published_at` (ISO 8601 UTC; falls back to `fetched_at` when the
+  date is missing or unparseable), `fetched_at` (poll time, ISO 8601 UTC),
+  `raw` (`title`, `summary`, `link`, `published` as feedparser returned them).
+- Only feed title and summary are stored; linked articles are never fetched.
+  Player tagging, chunking, and embeddings are later steps, not in ingest.
 
 ### Stage 1: resolution
 
@@ -412,3 +455,24 @@ The **body is authoritative** (current state); the log is provenance.
 - 2026-10-24 — `DEBUG=true` also prints the resolution stage: `extract(...,
   debug=...)` prints the `ExtractedRequest` and the extract call's cache
   creation/read tokens, and `__main__.py` prints validation's `rejected` list.
+- 2026-11-06 — v1.0 news collector: `ingest/` stage (`python -m ffassistant.ingest`)
+  polls `config.FEEDS` once per invocation and exits; scheduling is external, so
+  no frequency in config. Imports nothing from `resolution/`/`answering/`, and
+  they import nothing from it.
+- 2026-11-06 — Ingest stores feed title and summary only (no article fetching),
+  parsed at poll time, append-only forever, no raw XML snapshots; each item keeps
+  its original entry fields in `raw` for re-parsing.
+- 2026-11-06 — `ingest/store.py` is the only module touching `items.jsonl`
+  (`load_doc_ids`, `append_items`, `iter_items`), so the backend can change
+  without touching polling or retrieval.
+- 2026-11-06 — Feeds kept: RotoWire NFL and ESPN NFL. ProFootballTalk dropped
+  (teaser-only descriptions).
+- 2026-11-06 — Dedup is on `doc_id` = sha256[:16] of the normalized URL, except
+  feeds with an `ID_KEYS` override (RotoWire's links repeat across items, so its
+  key adds the raw date string).
+- 2026-11-06 — Per-feed oddities live in `ingest/overrides.py` as two independent
+  registries, `DATE_PARSERS` and `ID_KEYS`, not in ad hoc code in `poll.py`.
+  RotoWire overrides both: its `2:30:00 PM PST` dates are mis-parsed by feedparser
+  (reads 2:30 PM as 02:30 UTC), and its links repeat per player.
+- 2026-11-06 — `NEWS_DIR` is resolved against the repo root, not cwd, so cron and
+  launchd runs write to the same place regardless of working directory.

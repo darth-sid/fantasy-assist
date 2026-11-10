@@ -4,7 +4,11 @@ Purpose: learn RAG by building a start/sit decision tool.
 
 ## Project Structure
 
-The pipeline has two stages with one handoff type, `ValidatedRequest`:
+A separate collector, `ingest/` (stage 0), polls NFL news RSS feeds and stores
+the items for later retrieval; it shares no code with the two request-time
+stages below.
+
+The request pipeline has two stages with one handoff type, `ValidatedRequest`:
 
 1. **Resolution** (`resolution/`) — a natural-language request → an LLM
    extracts an `ExtractedRequest` (player mentions resolved to `gsis_id`s
@@ -20,6 +24,10 @@ never imports from `answering/`.
 
 All code lives in the `ffassistant/` package:
 
+- `ingest/` — stage 0, feeds → stored news items. `poll.py` polls every feed in
+  `config.FEEDS` once and appends new items; `store.py` is the only code that
+  touches `data/news/items.jsonl`; `models.py` has `NewsItem`; `overrides.py` holds
+  per-feed date-parsing and id-key overrides (see CLAUDE.md § Stage 0).
 - `resolution/` — stage 1, prompt → `ValidatedRequest`.
   - `models.py` — `ExtractedRequest` / `ExtractedPlayer` (the LLM's output
     schema), `ValidatedRequest` / `ValidPlayer` / `RejectedMention`, and
@@ -84,6 +92,54 @@ back to the hardcoded `REQUEST`; `DEBUG=true` prints the resolution stage,
 prompt-cache usage, and the answer context). It needs Anthropic API credentials:
 `ANTHROPIC_API_KEY` in a `.env` at the repo root (loaded by `__main__.py`), in the
 environment, or an `ant auth login` profile.
+
+## Running the news collector
+
+```
+python -m ffassistant.ingest
+```
+
+Each run polls every feed once, appends new items to `data/news/items.jsonl`
+(gitignored), prints one status line per feed, and exits (non-zero only if every
+feed failed). It does not loop; schedule it. RotoWire's feed holds only the last
+few updates, so poll often (every 15 minutes or so is safer than hourly).
+
+Hourly with cron (`crontab -e`):
+
+```
+0 * * * * cd /Users/sid/code/personal/projects/WIP/FFassistant && /Users/sid/code/personal/projects/WIP/FFassistant/.venv/bin/python -m ffassistant.ingest >> /Users/sid/code/personal/projects/WIP/FFassistant/data/ingest.log 2>&1
+```
+
+Hourly with launchd, saved as `~/Library/LaunchAgents/com.ffassistant.ingest.plist`
+and loaded with `launchctl load ~/Library/LaunchAgents/com.ffassistant.ingest.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ffassistant.ingest</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/sid/code/personal/projects/WIP/FFassistant/.venv/bin/python</string>
+    <string>-m</string>
+    <string>ffassistant.ingest</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/sid/code/personal/projects/WIP/FFassistant</string>
+  <key>StartInterval</key>
+  <integer>3600</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/sid/code/personal/projects/WIP/FFassistant/data/ingest.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/sid/code/personal/projects/WIP/FFassistant/data/ingest.log</string>
+</dict>
+</plist>
+```
+
+The cron line and the plist both write `data/ingest.log`; create `data/` first if
+the collector hasn't run yet.
 
 See [CLAUDE.md](CLAUDE.md) for the working agreement and decision log, and
 [API_CONTEXT.md](API_CONTEXT.md) for the nflreadpy data-source reference.

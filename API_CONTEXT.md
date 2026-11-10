@@ -171,3 +171,36 @@ list[int]` = specific season(s), unless noted otherwise.
 - Teams on bye have no `load_injuries` rows that week (28 of 32 teams had Week 7
   rows in 2026).
 - (Add new gotchas here as they're hit.)
+
+## News feeds (checked 2026-11-06)
+
+Not nflreadpy; these are the RSS feeds `ingest/` polls (`config.FEEDS`).
+
+**Kept**
+- **RotoWire** (`https://www.rotowire.com/rss/news.php?sport=NFL`): player-level
+  injury/status updates, e.g. `Ferguson (ankle) was expected to return for
+  Sunday's game against Washington, but he's been ruled out after injuring his
+  hamstring during Friday's practice, ...`, ending with a boilerplate "Visit
+  RotoWire.com for more analysis on this update." Only **5 items spanning about
+  24 minutes**, so a missed poll loses items; poll every few minutes if
+  completeness matters.
+- **ESPN** (`https://www.espn.com/espn/rss/nfl/news`): one-sentence teasers, some
+  player-specific (`... Deshaun Watson remains in the concussion protocol`),
+  many about teams or storylines. 27 items spanning about 33 hours.
+
+**Dropped**: ProFootballTalk. Its listed URL 301-redirects to
+`https://www.nbcsports.com/profootballtalk.rss`; 30 items over about 6 hours,
+but descriptions are headline-style teasers (`First session ends with no
+resolution.`).
+
+**Quirks**
+- RotoWire `pubDate` is `Fri, 06 Nov 2026 2:30:00 PM PST` (12-hour clock, US zone
+  abbreviation). feedparser does not fail on it: it silently returns 02:30 UTC,
+  ignoring PM and PST. `ingest/overrides.py` parses it via `DATE_PARSERS`.
+- RotoWire links are per-player pages (`.../football/player/<name>-<id>`), shared
+  by every update for that player, and contain a double slash
+  (`rotowire.com//football/player/...`). The raw date string is added to the
+  `doc_id` key.
+- ESPN and PFT dates are RFC-822 with offsets (`EST` / `-0500`); feedparser
+  handles them. No tracking parameters were seen in any link, and none of the
+  fetched feeds were flagged malformed.
