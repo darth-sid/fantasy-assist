@@ -8,3 +8,7 @@ FEEDS = {
     "espn": "https://www.espn.com/espn/rss/nfl/news",
 }
 NEWS_DIR = "data/news"  # relative to the repo root
+
+NEWS_TOP_K = 5
+NEWS_LOOKBACK_DAYS = 14
+NEWS_MAX_SUMMARY_CHARS = 500

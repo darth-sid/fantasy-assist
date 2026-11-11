@@ -35,7 +35,9 @@ news items, independent of the other two), `resolution/` (stage 1, prompt ->
 `ffassistant/`.
 
 **Dependency rule:** `answering/` may import `resolution.models` (the
-`ValidatedRequest` handoff type and its parts); `resolution/` never imports from
+`ValidatedRequest` handoff type and its parts), and `ingest.store` (read
+functions only: `iter_items`) and `ingest.models.NewsItem`; `resolution/` never
+imports from `answering/`; `ingest/` imports nothing from `resolution/` or
 `answering/`. There is no shared `contracts.py`; each type lives in the stage
 that owns it.
 
@@ -56,7 +58,9 @@ current week once with `get_current_week()` and passes it to both
 `extract(request, current_week, debug=...)` and `validate(extracted, request,
 current_week)` so they agree, then on `RequestValidationError` prints each
 error and exits 1 without calling the answer stage; otherwise prints
-`answer.answer`. The `DEBUG` env var (`true`, shell or `.env`) turns on debug
+`answer.answer`, then, if there are any citations, a `Sources:` block with one
+`- <title> (<published date>): <url>` line per `Citation` (nothing extra when
+there are none). The `DEBUG` env var (`true`, shell or `.env`) turns on debug
 output in order: `extract` prints the `ExtractedRequest` (each mention with
 its `player_id` or null, week, scoring format) and the extract call's
 `cache_creation_input_tokens` / `cache_read_input_tokens`; `__main__` prints
@@ -64,22 +68,27 @@ validation's `rejected` list; `answer(validated, debug=...)` prints the
 rendered context it already built before the LLM call.
 
 `config.py` pins `SEASON = 2026`, `DEFAULT_SCORING_FORMAT = "PPR"`, and the
-models `PARSER_MODEL` / `ANSWER_MODEL` (both `"claude-haiku-4-5"`). There is no
-current-week pin; the current week comes from the schedule at run time.
+models `PARSER_MODEL` / `ANSWER_MODEL` (both `"claude-haiku-4-5"`), and the
+news retrieval knobs `NEWS_TOP_K = 5`, `NEWS_LOOKBACK_DAYS = 14`,
+`NEWS_MAX_SUMMARY_CHARS = 500`. There is no current-week pin; the current week
+comes from the schedule at run time.
 
 ### Stage 0: ingest
 
 `ingest/` is a standalone collector (`python -m ffassistant.ingest`): one poll of
 every feed in `config.FEEDS` per invocation, then exit. Scheduling is external
 (cron/launchd); poll frequency is not in config. It builds the news history that
-retrieval will later read. **Dependency rule:** `ingest/` imports nothing from
-`resolution/` or `answering/`, and they import nothing from it.
+retrieval reads. **Dependency rule:** `ingest/` imports nothing from
+`resolution/` or `answering/`; `answering/` may import only `ingest.store`'s read
+function (`iter_items`) and `ingest.models.NewsItem`; `resolution/` imports
+nothing from it.
 
 - `clients/rss_client.py`: `fetch_feed(url) -> bytes`, raw HTTP only (`requests`,
   20 s timeout, `ffassistant/0.1` User-Agent; non-200 raises).
 - `ingest/store.py` is the only module that touches `items.jsonl`:
   `load_doc_ids()`, `append_items(items)`, `iter_items()` (retrieval's read
-  interface; unused by ingest itself). The path is `config.NEWS_DIR`
+  interface, used by `answering/sources/news.py`; unused by ingest itself;
+  a missing file yields nothing). The path is `config.NEWS_DIR`
   (`data/news`) resolved against the repo root, so cwd doesn't matter under
   cron. `data/` is gitignored.
 - `ingest/poll.py`: loads stored `doc_id`s, then per feed independently
@@ -157,20 +166,31 @@ drops the duplicate silently.
 `answering/models.py` holds `ResolvedContext` (`player_id`, `player_name`,
 `team`, `position`, `roster_status`, `season`, `week`, `scoring_format`),
 `SourceResult[T]`, `PlayerInputs(ctx, recent_stats, schedule, defense,
-injuries)`, and `Answer`.
+injuries, news)` (`news: SourceResult[NewsData] | None`, None when not fetched
+because of a target-week BYE or a schedule that isn't `ok`), `Citation`
+(`doc_id`, `title`, `published_at`, `url`; decoupled from `NewsEntry`, with
+the adapter `Citation.from_news_entry` living alongside it in the models), and
+`Answer`.
 
 `answering/player_context.py`: `player_context(player, season, week,
 scoring_format) -> ResolvedContext`. Team and `roster_status` come from the
 player's roster row with the latest `week <= target week` (falling back to the
 earliest row); `player_name` and `position` come from the `ValidPlayer`.
 
-`answering/generate.py`: `answer(validated) -> Answer` is the stage entry point.
-`gather_inputs(validated)` builds a `PlayerInputs` per valid player;
-`render_context` turns them into the text context, sent via `parse_structured`
-(`config.ANSWER_MODEL`) with a `GeneratedAnswer` output schema. `Answer`:
+`answering/generate.py`: `answer(validated, debug=False, now=None) -> Answer`
+is the stage entry point. `gather_inputs(validated, now=None)` builds a
+`PlayerInputs` per valid player (`now` defaults to the current UTC time and is
+injectable for tests); `render_context` turns them into the text context, sent
+via `parse_structured` (`config.ANSWER_MODEL`) with a `GeneratedAnswer` output
+schema (`answer`, `cited_doc_ids`). **News cutoff:** `news_cutoff(schedule,
+week, now)` = `min(now, kickoff of the target-week game)`, so upcoming weeks use
+now and past weeks use that game's kickoff; it is None (news not fetched) when
+the schedule isn't `ok` (no safe cutoff) or the target week is a BYE. After
+generation, `cited_doc_ids` not among the rendered news items are dropped
+deterministically, and the rest become `Citation`s via
+`Citation.from_news_entry`. `Answer`:
 `answer: str` (markdown, format chosen by the LLM to fit the question) and
-`cited_doc_ids: list[str]` (always empty for now, reserved for a future news
-branch). **The LLM makes the start/sit call.**
+`citations: list[Citation]`. **The LLM makes the start/sit call.**
 
 Sources: `answering/sources/*.py` implement `(ctx: ResolvedContext) ->
 SourceResult[T]`, where `T` is a rich, source-specific data type the branch
@@ -181,9 +201,11 @@ the `SourceResult` envelope (`source`, `status`, `as_of`, `data`, `error`).
   `"fantasy_points_ppr"` regardless of position, alongside position-specific raw
   stats.
 - `schedule.py` (`ScheduleData`): `team` plus one `ScheduleWeek` (`week`,
-  `opponent`, `home`, `played`) per week 1..`ctx.week`, from that season's REG
-  games involving `ctx.team`. `opponent=None` means bye; `played` comes from
-  `result` being non-null. Known simplification: it uses the player's team as of
+  `opponent`, `home`, `played`, `kickoff`) per week 1..`ctx.week`, from that
+  season's REG games involving `ctx.team`. `opponent=None` means bye; `played`
+  comes from `result` being non-null; `kickoff` is ISO 8601 UTC from `gameday` +
+  `gametime` read as `America/New_York` local time (midnight Eastern when
+  `gametime` is null), None on a bye. Known simplification: it uses the player's team as of
   the target week, so a player traded mid-season gets past weeks matched against
   the wrong team's schedule.
 - `defense.py` (`DefenseData`: `position`, `rows: list[DefenseRow]`): the league
@@ -199,6 +221,24 @@ the `SourceResult` envelope (`source`, `status`, `as_of`, `data`, `error`).
   `Questionable`, or null = listed without a game designation),
   `primary_injury`, `practice_status`. Reserve-list players drop off the
   report, which is why roster status is shown too.
+- `news.py` (`NewsData`: `cutoff`, `items: list[NewsEntry]`; `NewsEntry`:
+  `doc_id`, `source`, `published_at`, `title`, `summary`, `url`):
+  `news(ctx, cutoff)`, the one source that takes an extra argument. Minimal
+  recency-only retrieval (the baseline embeddings get compared against later):
+  no index, no embeddings, tagging by name match at retrieval time. Reads
+  `ingest.store.iter_items()` and keeps items about the player with
+  `cutoff - NEWS_LOOKBACK_DAYS <= published_at < cutoff`, newest first, top
+  `NEWS_TOP_K`. Name key (applied to the player's `full_name` and the matched
+  text): lowercase, curly quotes straightened, periods removed, whitespace
+  collapsed, a trailing `jr`/`sr`/`ii`/`iii`/`iv` removed. An item is about the
+  player when, for `rotowire`, the title text before the first `": "` has the
+  same name key (summaries use last names only, so never matched); for any
+  other source, the name key appears as whole words in the name-keyed title or
+  summary. Summaries have RotoWire's trailing `Visit RotoWire.com for more
+  analysis on this update.` stripped, then are truncated to
+  `NEWS_MAX_SUMMARY_CHARS` plus `...`. No matches (including a missing items
+  file) is `status="empty"`; `as_of` is the cutoff. Out of scope: team-level
+  news, teammate news, the RotoWire id crosswalk.
 
 `answering/context.py`: `render_context(validated, players)` renders the raw
 prompt, week, and scoring format, then one `Could not resolve "<mention>":
@@ -241,6 +281,14 @@ unavailable: defense failed to load: <error>` / `Matchup unavailable: no
 points-allowed data for WRs before Week 7` for defense `error`/`empty`;
 `Matchup unavailable: no games found for <TEAM> defense` when the opponent has
 no row; and `Matchup unavailable for kickers ...` when `ctx.position == "K"`.
+After the matchup lines (and after the schedule failure / matchup line in the
+stats-only fallback) come the news lines: `News (most recent first, before
+2026-11-15 18:00 UTC, last 14 days):` then one `- [<doc_id>] 2026-11-13 21:30
+UTC, rotowire: <title>. <summary>` line per item (title only when the summary
+is empty); `No news found in the 14 days before <cutoff>` (`empty`); `News
+failed to load: <error>` (`error`); `News unavailable: schedule failed to load,
+so no safe cutoff` when not fetched because the schedule isn't `ok`; nothing on
+a target-week BYE.
 Kickers get raw stats with no points value plus one `fantasy points unavailable
 for kickers ...` line, since nflverse doesn't score kicking. `status="empty"`
 and `status="error"` render as explicit lines — a player never silently
@@ -260,14 +308,18 @@ prompts and output schemas live in the calling stage modules:
    Its output is untrusted until `resolution/validate.py` checks it.
 2. `answering/generate.py` — **makes the start/sit decision.** Gets the rendered
    context (request, unresolved mentions, per-player name interpretation,
-   roster status, injury report, schedule, matchup, and recent stats) and returns the `Answer` envelope.
+   roster status, injury report, schedule, matchup, news, and recent stats) and returns the `Answer` envelope.
    Model: `config.ANSWER_MODEL`. The system prompt tells it to say plainly when
    a player's data is missing or failed to load rather than fill the gap, that
    a player on bye in the target week cannot score, that a player marked `Out`
    or on a reserve or PUP list will not play (`Doubtful` unlikely, `Questionable`
    uncertain), that the matchup rank
    shouldn't outweigh a player's own usage and production, and to mention
-   unresolved players and any name interpretation it relied on.
+   unresolved players and any name interpretation it relied on. It also treats
+   the news items as the most current information on availability and role,
+   cites each item it relies on by id in `cited_doc_ids` (only ids in the
+   context; others are dropped after generation), and flags news that conflicts
+   with the injury report, favoring whichever is more recent.
 
 ## Data Sources
 
@@ -347,7 +399,7 @@ The **body is authoritative** (current state); the log is provenance.
 - 2026-10-19 — Models are configurable: `config.PARSER_MODEL` and
   `config.ANSWER_MODEL`, both defaulting to `"claude-haiku-4-5"`;
   `extract_request` reads `PARSER_MODEL` instead of hardcoding the model.
-- 2026-10-19 — Answer output is an envelope with a free-form body: `Answer`
+- [superseded] 2026-10-19 — Answer output is an envelope with a free-form body: `Answer`
   (`answer: str` markdown, LLM picks the format; `cited_doc_ids: list[str]`,
   always empty in v0.5, reserved for the v1 news branch). `temperature=0`.
 - 2026-10-19 — The answer context shows fantasy points for the request's scoring
@@ -476,3 +528,25 @@ The **body is authoritative** (current state); the log is provenance.
   (reads 2:30 PM as 02:30 UTC), and its links repeat per player.
 - 2026-11-06 — `NEWS_DIR` is resolved against the repo root, not cwd, so cron and
   launchd runs write to the same place regardless of working directory.
+- 2026-11-10 — v1.1 minimal news retrieval: per player, stored news items about
+  that player, before a cutoff, within a lookback window, newest first, top K,
+  rendered into the answer context. Recency-only ranking; no index, embeddings,
+  or Chroma (the baseline embeddings get compared against later).
+- 2026-11-10 — News tagging happens at retrieval time by name-key matching
+  (RotoWire: title prefix before `": "` only; other sources: whole words in title
+  or summary). No separate index or tagging step.
+- 2026-11-10 — Knobs in `config.py`: `NEWS_TOP_K = 5`, `NEWS_LOOKBACK_DAYS = 14`,
+  `NEWS_MAX_SUMMARY_CHARS = 500`.
+- 2026-11-10 — News cutoff is a correctness rule: `min(now, target-week
+  kickoff)`. No news on a target-week BYE; no news when the schedule isn't `ok`
+  (`error` or `empty`), rendered as "no safe cutoff". `ScheduleWeek` gains
+  `kickoff` (ISO 8601 UTC from Eastern `gameday`/`gametime`).
+- 2026-11-10 — Dependency rule: `answering/` may import `ingest.store`'s read
+  function (`iter_items`) and `ingest.models.NewsItem`; `ingest/` still imports
+  nothing from the other stages.
+- 2026-11-10 — Citations: the answer LLM cites news ids in `cited_doc_ids`;
+  ids not in the rendered context are dropped deterministically. `Answer`
+  replaces `cited_doc_ids` with `citations: list[Citation]` (`doc_id`, `title`,
+  `published_at`, `url`), a decoupled adapter over the rendered `NewsEntry`s;
+  `__main__.py` prints them as a `Sources:` block. Supersedes the 2026-10-19
+  "always empty `cited_doc_ids`" part of the answer-envelope entry.

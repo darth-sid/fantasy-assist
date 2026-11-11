@@ -41,4 +41,10 @@ if debug:
     print("-------------------------")
     print()
 
-print(answer(validated, debug=debug).answer)
+result = answer(validated, debug=debug)
+print(result.answer)
+if result.citations:
+    print()
+    print("Sources:")
+    for citation in result.citations:
+        print(f"- {citation.title} ({citation.published_at[:10]}): {citation.url}")

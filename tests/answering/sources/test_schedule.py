@@ -16,19 +16,31 @@ CTX = ResolvedContext(
 )
 
 
+def _game(week, home_team, away_team, result, game_type="REG", gameday=None, gametime="13:00"):
+    return {
+        "game_type": game_type,
+        "week": week,
+        "home_team": home_team,
+        "away_team": away_team,
+        "result": result,
+        "gameday": gameday or f"2026-10-{week + 10:02d}",
+        "gametime": gametime,
+    }
+
+
 def _schedules_df() -> pl.DataFrame:
     return pl.DataFrame(
         [
-            {"game_type": "REG", "week": 1, "home_team": "MIN", "away_team": "CHI", "result": 7},
-            {"game_type": "REG", "week": 2, "home_team": "ATL", "away_team": "MIN", "result": -3},
-            {"game_type": "REG", "week": 3, "home_team": "MIN", "away_team": "CIN", "result": 10},
-            {"game_type": "REG", "week": 4, "home_team": "MIA", "away_team": "MIN", "result": 4},
-            {"game_type": "REG", "week": 5, "home_team": "MIN", "away_team": "CLE", "result": 1},
-            {"game_type": "REG", "week": 6, "home_team": "SF", "away_team": "MIN", "result": None},
-            {"game_type": "REG", "week": 7, "home_team": "MIN", "away_team": "IND", "result": None},
-            {"game_type": "REG", "week": 8, "home_team": "DET", "away_team": "MIN", "result": None},
-            {"game_type": "REG", "week": 3, "home_team": "DAL", "away_team": "NYG", "result": 3},
-            {"game_type": "WC", "week": 19, "home_team": "MIN", "away_team": "GB", "result": None},
+            _game(1, "MIN", "CHI", 7),
+            _game(2, "ATL", "MIN", -3),
+            _game(3, "MIN", "CIN", 10),
+            _game(4, "MIA", "MIN", 4),
+            _game(5, "MIN", "CLE", 1),
+            _game(6, "SF", "MIN", None),
+            _game(7, "MIN", "IND", None),
+            _game(8, "DET", "MIN", None),
+            _game(3, "DAL", "NYG", 3),
+            _game(19, "MIN", "GB", None, game_type="WC"),
         ]
     )
 
@@ -51,13 +63,17 @@ def test_one_entry_per_week_through_target_week(monkeypatch):
 def test_played_home_game(monkeypatch):
     weeks = _weeks(monkeypatch, _schedules_df())
 
-    assert weeks[1] == ScheduleWeek(week=1, opponent="CHI", home=True, played=True)
+    assert weeks[1] == ScheduleWeek(
+        week=1, opponent="CHI", home=True, played=True, kickoff="2026-10-11T17:00:00+00:00"
+    )
 
 
 def test_played_away_game(monkeypatch):
     weeks = _weeks(monkeypatch, _schedules_df())
 
-    assert weeks[4] == ScheduleWeek(week=4, opponent="MIA", home=False, played=True)
+    assert weeks[4] == ScheduleWeek(
+        week=4, opponent="MIA", home=False, played=True, kickoff="2026-10-14T17:00:00+00:00"
+    )
 
 
 def test_bye_week(monkeypatch):
@@ -65,19 +81,51 @@ def test_bye_week(monkeypatch):
 
     weeks = _weeks(monkeypatch, df)
 
-    assert weeks[5] == ScheduleWeek(week=5, opponent=None, home=None, played=False)
+    assert weeks[5] == ScheduleWeek(week=5, opponent=None, home=None, played=False, kickoff=None)
 
 
 def test_unplayed_upcoming_week(monkeypatch):
     weeks = _weeks(monkeypatch, _schedules_df())
 
-    assert weeks[7] == ScheduleWeek(week=7, opponent="IND", home=True, played=False)
+    assert weeks[7] == ScheduleWeek(
+        week=7, opponent="IND", home=True, played=False, kickoff="2026-10-17T17:00:00+00:00"
+    )
 
 
 def test_unplayed_past_week(monkeypatch):
     weeks = _weeks(monkeypatch, _schedules_df())
 
-    assert weeks[6] == ScheduleWeek(week=6, opponent="SF", home=False, played=False)
+    assert weeks[6] == ScheduleWeek(
+        week=6, opponent="SF", home=False, played=False, kickoff="2026-10-16T17:00:00+00:00"
+    )
+
+
+def _kickoff_for_week_7(monkeypatch, gameday: str, gametime: str | None) -> str | None:
+    df = _schedules_df().filter(pl.col("week") != 7)
+    df = pl.concat([df, pl.DataFrame([_game(7, "MIN", "IND", None, gameday=gameday, gametime=gametime)])])
+    return _weeks(monkeypatch, df)[7].kickoff
+
+
+def test_kickoff_converts_eastern_daylight_time_to_utc(monkeypatch):
+    assert _kickoff_for_week_7(monkeypatch, "2026-10-25", "13:00") == "2026-10-25T17:00:00+00:00"
+
+
+def test_kickoff_converts_eastern_standard_time_to_utc(monkeypatch):
+    assert _kickoff_for_week_7(monkeypatch, "2026-11-08", "13:00") == "2026-11-08T18:00:00+00:00"
+
+
+def test_kickoff_evening_game_rolls_into_next_utc_day(monkeypatch):
+    assert _kickoff_for_week_7(monkeypatch, "2026-11-09", "20:15") == "2026-11-10T01:15:00+00:00"
+
+
+def test_kickoff_null_gametime_uses_eastern_midnight(monkeypatch):
+    assert _kickoff_for_week_7(monkeypatch, "2026-11-08", None) == "2026-11-08T05:00:00+00:00"
+
+
+def test_kickoff_null_on_bye(monkeypatch):
+    weeks = _weeks(monkeypatch, _schedules_df().filter(pl.col("week") != 5))
+
+    assert weeks[5].kickoff is None
 
 
 def test_error_status_when_fetch_raises(monkeypatch):

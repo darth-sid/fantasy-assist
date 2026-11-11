@@ -7,6 +7,7 @@ if TYPE_CHECKING:
     # The sources import ResolvedContext/SourceResult from here, so a runtime import would be circular.
     from ffassistant.answering.sources.defense import DefenseData
     from ffassistant.answering.sources.injuries import InjuryData
+    from ffassistant.answering.sources.news import NewsData, NewsEntry
     from ffassistant.answering.sources.recent_stats import RecentStatsData
     from ffassistant.answering.sources.schedule import ScheduleData
 
@@ -39,9 +40,27 @@ class PlayerInputs:
     schedule: SourceResult[ScheduleData]
     defense: SourceResult[DefenseData]
     injuries: SourceResult[InjuryData]
+    news: SourceResult[NewsData] | None  # None when not fetched: target-week BYE or no schedule
+
+
+@dataclass
+class Citation:
+    doc_id: str
+    title: str
+    published_at: str
+    url: str
+
+    @classmethod
+    def from_news_entry(cls, entry: NewsEntry) -> Citation:
+        return cls(
+            doc_id=entry.doc_id,
+            title=entry.title,
+            published_at=entry.published_at,
+            url=entry.url,
+        )
 
 
 @dataclass
 class Answer:
     answer: str  # markdown
-    cited_doc_ids: list[str]
+    citations: list[Citation]

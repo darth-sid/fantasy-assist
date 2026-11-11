@@ -2,6 +2,7 @@ from ffassistant.answering.context import render_context
 from ffassistant.answering.models import PlayerInputs, ResolvedContext, SourceResult
 from ffassistant.answering.sources.defense import DefenseData, DefenseRow
 from ffassistant.answering.sources.injuries import InjuryData, InjuryEntry
+from ffassistant.answering.sources.news import NewsData, NewsEntry
 from ffassistant.answering.sources.recent_stats import GameLine, RecentStatsData
 from ffassistant.answering.sources.schedule import ScheduleData, ScheduleWeek
 from ffassistant.resolution.models import RejectedMention, ValidatedRequest, ValidPlayer
@@ -81,13 +82,13 @@ def _ok_result() -> SourceResult[RecentStatsData]:
 
 def _schedule_result(*replacements: ScheduleWeek) -> SourceResult[ScheduleData]:
     weeks = {
-        1: ScheduleWeek(week=1, opponent="NYG", home=True, played=True),
-        2: ScheduleWeek(week=2, opponent="PHI", home=False, played=True),
-        3: ScheduleWeek(week=3, opponent="CHI", home=True, played=True),
-        4: ScheduleWeek(week=4, opponent="MIA", home=False, played=True),
-        5: ScheduleWeek(week=5, opponent="GB", home=True, played=True),
-        6: ScheduleWeek(week=6, opponent=None, home=None, played=False),
-        7: ScheduleWeek(week=7, opponent="IND", home=True, played=False),
+        1: ScheduleWeek(week=1, opponent="NYG", home=True, played=True, kickoff=None),
+        2: ScheduleWeek(week=2, opponent="PHI", home=False, played=True, kickoff=None),
+        3: ScheduleWeek(week=3, opponent="CHI", home=True, played=True, kickoff=None),
+        4: ScheduleWeek(week=4, opponent="MIA", home=False, played=True, kickoff=None),
+        5: ScheduleWeek(week=5, opponent="GB", home=True, played=True, kickoff=None),
+        6: ScheduleWeek(week=6, opponent=None, home=None, played=False, kickoff=None),
+        7: ScheduleWeek(week=7, opponent="IND", home=True, played=False, kickoff=None),
     }
     for week in replacements:
         weeks[week.week] = week
@@ -124,6 +125,7 @@ def _inputs(
     sched: SourceResult[ScheduleData] | None = None,
     defense: SourceResult[DefenseData] | None = None,
     injuries: SourceResult[InjuryData] | None = None,
+    news: SourceResult[NewsData] | None = None,
 ) -> PlayerInputs:
     return PlayerInputs(
         ctx=ctx,
@@ -131,6 +133,7 @@ def _inputs(
         schedule=sched if sched is not None else _schedule_result(),
         defense=defense if defense is not None else _defense_result(),
         injuries=injuries if injuries is not None else _injury_result(),
+        news=news,
     )
 
 
@@ -236,7 +239,7 @@ def test_target_week_home_game():
 
 
 def test_target_week_away_game():
-    sched = _schedule_result(ScheduleWeek(week=7, opponent="BAL", home=False, played=False))
+    sched = _schedule_result(ScheduleWeek(week=7, opponent="BAL", home=False, played=False, kickoff=None))
 
     context = _render([_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result(), sched)])
 
@@ -244,7 +247,7 @@ def test_target_week_away_game():
 
 
 def test_target_week_bye():
-    sched = _schedule_result(ScheduleWeek(week=7, opponent=None, home=None, played=False))
+    sched = _schedule_result(ScheduleWeek(week=7, opponent=None, home=None, played=False, kickoff=None))
 
     context = _render([_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result(), sched)])
 
@@ -273,7 +276,7 @@ def test_played_week_without_stat_row_is_did_not_play():
 
 
 def test_unplayed_past_week_is_stats_pending():
-    sched = _schedule_result(ScheduleWeek(week=6, opponent="SF", home=True, played=False))
+    sched = _schedule_result(ScheduleWeek(week=6, opponent="SF", home=True, played=False, kickoff=None))
 
     context = _render([_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result(), sched)])
 
@@ -309,7 +312,7 @@ def test_schedule_error_falls_back_to_stats_only():
     context = _render([_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result(), sched_error)])
 
     lines = context.splitlines()
-    assert "HTTPError: 502" in _line_with(context, "schedule")
+    assert "HTTPError: 502" in _line_with(context, "schedule failed to load: ")
     assert "fantasy_points (PPR)=18.4" in _line_with(context, "NYG")
     assert "receptions=4" in _line_with(context, "PHI")
     assert not any("BYE" in line or "did not play" in line for line in lines)
@@ -332,7 +335,7 @@ def _matchup_context(
     opponent: str | None = "IND",
     defense: SourceResult[DefenseData] | None = None,
 ) -> list[str]:
-    sched = _schedule_result(ScheduleWeek(week=7, opponent=opponent, home=True, played=False))
+    sched = _schedule_result(ScheduleWeek(week=7, opponent=opponent, home=True, played=False, kickoff=None))
     ctx = _ctx("CeeDee Lamb", "DAL", scoring_format)
     return _render([_inputs(ctx, _ok_result(), sched, defense)]).splitlines()
 
@@ -548,7 +551,7 @@ def test_injury_line_error():
 
 
 def test_no_injury_line_on_bye():
-    sched = _schedule_result(ScheduleWeek(week=7, opponent=None, home=None, played=False))
+    sched = _schedule_result(ScheduleWeek(week=7, opponent=None, home=None, played=False, kickoff=None))
     empty = SourceResult(source="injuries", status="empty", as_of="Week 7")
 
     lines = _player_lines(_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result(), sched, injuries=empty))
@@ -577,8 +580,8 @@ def test_did_not_play_home_and_away():
 
 def test_stats_pending_home_and_away():
     lines = _past_week_lines(
-        ScheduleWeek(week=4, opponent="MIA", home=False, played=False),
-        ScheduleWeek(week=5, opponent="GB", home=True, played=False),
+        ScheduleWeek(week=4, opponent="MIA", home=False, played=False, kickoff=None),
+        ScheduleWeek(week=5, opponent="GB", home=True, played=False, kickoff=None),
     )
 
     assert "Week 4 @ MIA: game not yet played, stats pending" in lines
@@ -600,3 +603,83 @@ def test_stats_lines_fall_back_to_vs_when_schedule_fails():
     lines = _player_lines(_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result(), sched_error))
 
     assert any(line.startswith("Week 2 vs PHI: ") for line in lines)
+
+
+def _news_result(*entries: NewsEntry) -> SourceResult[NewsData]:
+    cutoff = "2026-11-15T18:00:00+00:00"
+    if not entries:
+        return SourceResult(source="news", status="empty", as_of=cutoff)
+    return SourceResult(
+        source="news", status="ok", as_of=cutoff, data=NewsData(cutoff=cutoff, items=list(entries))
+    )
+
+
+def _news_entry(summary: str = "Ferguson was expected to return ...") -> NewsEntry:
+    return NewsEntry(
+        doc_id="3f9a1c2e7b4d0a16",
+        source="rotowire",
+        published_at="2026-11-13T21:30:00+00:00",
+        title="Terrance Ferguson: Suffers hamstring injury",
+        summary=summary,
+        url="https://example.com/a",
+    )
+
+
+def _news_context(
+    news: SourceResult[NewsData] | None, sched: SourceResult[ScheduleData] | None = None
+) -> list[str]:
+    ctx = _ctx("CeeDee Lamb", "DAL")
+    return _render([_inputs(ctx, _ok_result(), sched, news=news)]).splitlines()
+
+
+def test_news_items_render_after_matchup_before_past_weeks():
+    lines = _news_context(_news_result(_news_entry()))
+
+    caveat = lines.index(
+        "Points allowed is a small early-season sample and is not adjusted for opponents faced."
+    )
+    assert lines[caveat + 1] == "News (most recent first, before 2026-11-15 18:00 UTC, last 14 days):"
+    assert lines[caveat + 2] == (
+        "- [3f9a1c2e7b4d0a16] 2026-11-13 21:30 UTC, rotowire: "
+        "Terrance Ferguson: Suffers hamstring injury. Ferguson was expected to return ..."
+    )
+    assert lines[caveat + 3].startswith("Week 1 ")
+
+
+def test_news_item_without_summary_renders_title_only():
+    lines = _news_context(_news_result(_news_entry(summary="")))
+
+    assert (
+        "- [3f9a1c2e7b4d0a16] 2026-11-13 21:30 UTC, rotowire: "
+        "Terrance Ferguson: Suffers hamstring injury"
+    ) in lines
+
+
+def test_news_empty():
+    lines = _news_context(_news_result())
+
+    assert "No news found in the 14 days before 2026-11-15 18:00 UTC" in lines
+
+
+def test_news_error():
+    error = SourceResult(
+        source="news", status="error", as_of="2026-11-15T18:00:00+00:00", error="OSError: disk gone"
+    )
+
+    assert "News failed to load: OSError: disk gone" in _news_context(error)
+
+
+def test_news_unavailable_when_schedule_fails():
+    sched_error = SourceResult(source="schedule", status="error", as_of="Week 7", error="boom")
+
+    lines = _news_context(None, sched_error)
+
+    assert "News unavailable: schedule failed to load, so no safe cutoff" in lines
+
+
+def test_no_news_line_on_bye():
+    sched = _schedule_result(ScheduleWeek(week=7, opponent=None, home=None, played=False, kickoff=None))
+
+    lines = _news_context(None, sched)
+
+    assert not any("news" in line.lower() for line in lines)

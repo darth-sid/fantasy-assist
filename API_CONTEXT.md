@@ -55,7 +55,11 @@ never import `nflreadpy` directly.
   `clients.nflreadpy_client.load_schedules` (always passed a single season, so the
   all-seasons default never applies). Filtered on `game_type == "REG"` and the
   player's team as `home_team` or `away_team`. Columns relied on: `game_type`,
-  `week`, `home_team`, `away_team`, `result`.
+  `week`, `home_team`, `away_team`, `result`, `gameday`, `gametime`.
+  `gameday` (`2026-09-13`) and `gametime` (`13:00`, 24-hour) are strings in **US
+  Eastern local time**, not UTC; convert with `America/New_York` so daylight
+  saving is handled. `gametime` can be null (treated as midnight Eastern on
+  `gameday`).
 - `load_injuries(seasons)` — used by `answering/sources/injuries.py` via
   `clients.nflreadpy_client.load_injuries` (single season). One row per
   `(gsis_id, week)`, REG only (weeks 1 to 7 for 2026 as of 2026-10-24). Filtered
@@ -197,6 +201,10 @@ resolution.`).
 - RotoWire `pubDate` is `Fri, 06 Nov 2026 2:30:00 PM PST` (12-hour clock, US zone
   abbreviation). feedparser does not fail on it: it silently returns 02:30 UTC,
   ignoring PM and PST. `ingest/overrides.py` parses it via `DATE_PARSERS`.
+- RotoWire titles are `<Full Name>: <headline>` (`Terrance Ferguson: Suffers
+  hamstring injury, out again`), but summaries refer to the player by last name
+  only (`Ferguson (ankle) was expected ...`), so news retrieval matches RotoWire
+  items on the title prefix, never the summary.
 - RotoWire links are per-player pages (`.../football/player/<name>-<id>`), shared
   by every update for that player, and contain a double slash
   (`rotowire.com//football/player/...`). The raw date string is added to the
