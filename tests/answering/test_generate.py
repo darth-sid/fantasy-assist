@@ -11,7 +11,7 @@ from ffassistant.answering.models import (
 )
 from ffassistant.answering.sources.news import NewsData, NewsEntry
 from ffassistant.answering.sources.schedule import ScheduleData, ScheduleWeek
-from ffassistant.clients.anthropic_client import StructuredResponse
+from ffassistant.clients.llm_client import StructuredResponse
 from ffassistant.resolution.models import ValidatedRequest, ValidPlayer
 
 
@@ -41,6 +41,11 @@ CTX = ResolvedContext(
     scoring_format="PPR",
 )
 NOW = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+
+
+class FakeClient:
+    def __init__(self, generate):
+        self.generate_structured = generate
 
 
 def _schedule(kickoff: str | None, opponent: str | None = "IND") -> SourceResult[ScheduleData]:
@@ -140,12 +145,11 @@ def test_hallucinated_cited_ids_are_dropped(monkeypatch):
         data=NewsData(cutoff=NOW.isoformat(), items=[entry]),
     )
     monkeypatch.setattr(generate_module, "news", lambda ctx, cutoff: news_result)
+    reply = StructuredResponse(
+        parsed=GeneratedAnswer(answer="Start.", cited_doc_ids=["fake", "real"]), usage=None
+    )
     monkeypatch.setattr(
-        generate_module,
-        "parse_structured",
-        lambda **kwargs: StructuredResponse(
-            parsed=GeneratedAnswer(answer="Start.", cited_doc_ids=["fake", "real"]), usage=None
-        ),
+        generate_module, "get_llm_client", lambda: FakeClient(lambda **kwargs: reply)
     )
 
     result = answer(_validated(), now=NOW)
@@ -165,7 +169,7 @@ def test_answer_runs_sources_and_returns_generated_output(monkeypatch):
     empty = lambda name: SourceResult(source=name, status="empty", as_of="Week 7")
     seen = {}
 
-    def fake_parse_structured(model, system, user_content, output_model, max_tokens):
+    def fake_generate(model, system, user_content, output_model, max_tokens):
         seen["context"] = user_content
         return StructuredResponse(
             parsed=GeneratedAnswer(answer="Start **Lamb**.", cited_doc_ids=[]), usage=None
@@ -176,7 +180,7 @@ def test_answer_runs_sources_and_returns_generated_output(monkeypatch):
     monkeypatch.setattr(generate_module, "schedule", lambda ctx: empty("schedule"))
     monkeypatch.setattr(generate_module, "defense", lambda ctx: empty("defense"))
     monkeypatch.setattr(generate_module, "injuries", lambda ctx: empty("injuries"))
-    monkeypatch.setattr(generate_module, "parse_structured", fake_parse_structured)
+    monkeypatch.setattr(generate_module, "get_llm_client", lambda: FakeClient(fake_generate))
 
     result = answer(_validated())
 

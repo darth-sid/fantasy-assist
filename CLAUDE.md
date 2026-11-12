@@ -30,7 +30,7 @@ split into three stages plus shared plumbing: `ingest/` (stage 0, feeds -> store
 news items, independent of the other two), `resolution/` (stage 1, prompt ->
 `ValidatedRequest`), `answering/` (stage 2, `ValidatedRequest` -> `Answer`, with
 `answering/sources/` inside it), `clients/`, and flat `config.py` /
-`__main__.py`. `tests/` mirrors the package's folders (`tests/ingest/`, `tests/resolution/`,
+`__main__.py`. `tests/` mirrors the package's folders (`tests/clients/`, `tests/ingest/`, `tests/resolution/`,
 `tests/answering/`, `tests/answering/sources/`). Paths below are relative to
 `ffassistant/`.
 
@@ -43,12 +43,22 @@ that owns it.
 
 `clients/nflreadpy_client.py` holds all raw nflreadpy access, including
 `get_current_week()` (nflreadpy's default schedule-based lookup, never
-`use_date=True`). `clients/anthropic_client.py` is raw SDK access only: one
-generic `parse_structured(model, system, user_content, output_model,
-max_tokens) -> StructuredResponse[T]` (`messages.parse()`, `temperature=0`),
-where `StructuredResponse` is a dataclass of `parsed: T` and the response
-`usage`. Prompts and Pydantic output schemas live in the stage modules that use
-them. Nothing else imports either library.
+`use_date=True`). LLM access goes through a provider-neutral interface in
+`clients/llm_client.py`: the `LLMClient` ABC with one method,
+`generate_structured(model, system, user_content, output_model, max_tokens) ->
+StructuredResponse[T]`, plus the neutral types it speaks: `SystemBlock`
+(`text`, `cache: bool`, a prompt-caching hint providers may ignore),
+`TokenUsage` (`input_tokens`, `output_tokens`, `cache_write_tokens`,
+`cache_read_tokens`), and `StructuredResponse` (`parsed: T`, `usage:
+TokenUsage`). `get_llm_client()` returns the implementation named by
+`config.LLM_PROVIDER` (`"anthropic"`; anything else raises `ValueError`); the
+stages do `client = get_llm_client()` then `client.generate_structured(...)`,
+and tests monkeypatch
+`get_llm_client`. `clients/anthropic_client.py`'s `AnthropicClient` is raw SDK
+access only (`messages.parse()`, `temperature=0`): it turns `SystemBlock`s into
+text blocks (`cache=True` -> `cache_control` ephemeral) and the SDK usage into
+`TokenUsage`. Prompts and Pydantic output schemas live in the stage modules that
+use them. Nothing else imports either library.
 
 `__main__.py` is orchestration only: one natural-language request ->
 `extract` -> `validate` -> `answer`. The request is the first command-line
@@ -63,7 +73,7 @@ error and exits 1 without calling the answer stage; otherwise prints
 there are none). The `DEBUG` env var (`true`, shell or `.env`) turns on debug
 output in order: `extract` prints the `ExtractedRequest` (each mention with
 its `player_id` or null, week, scoring format) and the extract call's
-`cache_creation_input_tokens` / `cache_read_input_tokens`; `__main__` prints
+`cache_write_tokens` / `cache_read_tokens`; `__main__` prints
 validation's `rejected` list; `answer(validated, debug=...)` prints the
 rendered context it already built before the LLM call.
 
@@ -181,7 +191,7 @@ earliest row); `player_name` and `position` come from the `ValidPlayer`.
 is the stage entry point. `gather_inputs(validated, now=None)` builds a
 `PlayerInputs` per valid player (`now` defaults to the current UTC time and is
 injectable for tests); `render_context` turns them into the text context, sent
-via `parse_structured` (`config.ANSWER_MODEL`) with a `GeneratedAnswer` output
+via `generate_structured` (`config.ANSWER_MODEL`) with a `GeneratedAnswer` output
 schema (`answer`, `cited_doc_ids`). **News cutoff:** `news_cutoff(schedule,
 week, now)` = `min(now, kickoff of the target-week game)`, so upcoming weeks use
 now and past weeks use that game's kickoff; it is None (news not fetched) when
@@ -298,8 +308,10 @@ Working mode: **Build** — Sid designs, Claude implements to spec.
 
 ## LLM usage
 
-Two LLM touch points, both through `clients/anthropic_client.py`'s
-`parse_structured` (`temperature=0`, `messages.parse()` + a Pydantic model). The
+Two LLM touch points, both via `client = get_llm_client()` then
+`client.generate_structured(...)`
+(`clients/llm_client.py`; the Anthropic implementation uses `temperature=0`,
+`messages.parse()` + a Pydantic model). The
 prompts and output schemas live in the calling stage modules:
 1. `resolution/extract.py` — turns the raw natural-language prompt into an
    `ExtractedRequest` (player mentions **resolved to `gsis_id`s** against the
@@ -324,8 +336,9 @@ prompts and output schemas live in the calling stage modules:
 ## Data Sources
 
 Player/team/NFL data comes from **nflreadpy** (Python port of the R `nflreadr`/nflverse
-tooling; loaders return Polars DataFrames). LLM calls go through
-`clients/anthropic_client.py` (Anthropic SDK).
+tooling; loaders return Polars DataFrames). LLM calls go through the
+`LLMClient` interface in `clients/llm_client.py`, implemented for the Anthropic
+SDK in `clients/anthropic_client.py`.
 
 Full function signatures, config/caching behavior, and accumulated gotchas: see
 [API_CONTEXT.md](API_CONTEXT.md). Keep that file current as we learn more about the
@@ -471,7 +484,7 @@ The **body is authoritative** (current state); the log is provenance.
   `answering/` (models, player_context, sources, context, generate). `answering/`
   may import `resolution.models`; `resolution/` never imports `answering/`.
   `contracts.py` and `answer.py` removed; their types moved to the owning stage.
-- 2026-10-24 — `clients/anthropic_client.py` is raw SDK access only: one generic
+- [superseded] 2026-10-24 — `clients/anthropic_client.py` is raw SDK access only: one generic
   `parse_structured`. Prompts and output schemas moved into `resolution/extract.py`
   and `answering/generate.py`.
 - 2026-10-24 — `ResolvedContext` is built in `answering/player_context.py` from a
@@ -502,7 +515,7 @@ The **body is authoritative** (current state); the log is provenance.
   stats-only fallback (schedule failed) keeps `vs`.
 - 2026-10-24 — `__main__.py` takes the request from the first command-line
   argument, falling back to `REQUEST`.
-- 2026-10-24 — `parse_structured` returns a `StructuredResponse[T]` (`parsed`,
+- [superseded] 2026-10-24 — `parse_structured` returns a `StructuredResponse[T]` (`parsed`,
   `usage`) instead of the bare parsed model, so callers can see cache usage.
 - 2026-10-24 — `DEBUG=true` also prints the resolution stage: `extract(...,
   debug=...)` prints the `ExtractedRequest` and the extract call's cache
@@ -550,3 +563,13 @@ The **body is authoritative** (current state); the log is provenance.
   `published_at`, `url`), a decoupled adapter over the rendered `NewsEntry`s;
   `__main__.py` prints them as a `Sources:` block. Supersedes the 2026-10-19
   "always empty `cited_doc_ids`" part of the answer-envelope entry.
+- 2026-11-11 — `parse_structured` replaced by a provider-neutral `LLMClient` ABC
+  (`clients/llm_client.py`) with `generate_structured`, obtained via
+  `get_llm_client()` from `config.LLM_PROVIDER` (`"anthropic"`).
+  `AnthropicClient` in `clients/anthropic_client.py` implements it. Supersedes
+  the 2026-10-24 `parse_structured` entries.
+- 2026-11-11 — The interface uses neutral types: `SystemBlock(text, cache)`
+  instead of Anthropic block dicts, and `TokenUsage` (input/output/cache-write/
+  cache-read counts) instead of the SDK's `Usage`; the Anthropic implementation
+  translates both ways. Extract's debug cache line now prints
+  `cache_write_tokens` / `cache_read_tokens`.

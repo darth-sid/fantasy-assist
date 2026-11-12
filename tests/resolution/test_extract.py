@@ -1,7 +1,5 @@
-from anthropic.types import Usage
-
 import ffassistant.resolution.extract as extract_module
-from ffassistant.clients.anthropic_client import StructuredResponse
+from ffassistant.clients.llm_client import StructuredResponse, TokenUsage
 from ffassistant.config import PARSER_MODEL, SEASON
 from ffassistant.resolution.extract import extract
 from ffassistant.resolution.models import ExtractedPlayer, ExtractedRequest
@@ -22,23 +20,25 @@ PARSED = ExtractedRequest(
     week=7,
     scoring_format=None,
 )
-USAGE = Usage(
-    input_tokens=40,
-    output_tokens=30,
-    cache_creation_input_tokens=0,
-    cache_read_input_tokens=21132,
-)
+USAGE = TokenUsage(input_tokens=40, output_tokens=30, cache_write_tokens=0, cache_read_tokens=21132)
+
+
+class FakeClient:
+    def __init__(self, calls: dict):
+        self.calls = calls
+
+    def generate_structured(self, model, system, user_content, output_model, max_tokens):
+        self.calls.update(
+            model=model, system=system, user_content=user_content, output_model=output_model
+        )
+        return StructuredResponse(parsed=PARSED, usage=USAGE)
 
 
 def _run(monkeypatch, debug: bool = False) -> tuple[ExtractedRequest, dict]:
     calls = {}
 
-    def fake_parse_structured(model, system, user_content, output_model, max_tokens):
-        calls.update(model=model, system=system, user_content=user_content, output_model=output_model)
-        return StructuredResponse(parsed=PARSED, usage=USAGE)
-
     monkeypatch.setattr(extract_module, "load_fantasy_roster", lambda season: ROSTER)
-    monkeypatch.setattr(extract_module, "parse_structured", fake_parse_structured)
+    monkeypatch.setattr(extract_module, "get_llm_client", lambda: FakeClient(calls))
     return extract("CeeDee Lam this week?", CURRENT_WEEK, debug=debug), calls
 
 
@@ -54,7 +54,7 @@ def test_returns_parsed_output(monkeypatch):
 def test_system_blocks_use_passed_in_current_week(monkeypatch):
     _, calls = _run(monkeypatch)
 
-    text = "\n".join(block["text"] for block in calls["system"])
+    text = "\n".join(block.text for block in calls["system"])
     assert f"Season: {SEASON}" in text
     assert f"Current week: {CURRENT_WEEK}" in text
     assert f'"next week" = {CURRENT_WEEK + 1}' in text
@@ -63,9 +63,9 @@ def test_system_blocks_use_passed_in_current_week(monkeypatch):
 def test_roster_is_its_own_cached_block(monkeypatch):
     _, calls = _run(monkeypatch)
 
-    roster_blocks = [b for b in calls["system"] if "00-1 | CeeDee Lamb | DAL | WR | ACT" in b["text"]]
-    assert len(roster_blocks) == 1
-    assert roster_blocks[0]["cache_control"] == {"type": "ephemeral"}
+    cached = [b for b in calls["system"] if b.cache]
+    assert len(cached) == 1
+    assert "00-1 | CeeDee Lamb | DAL | WR | ACT" in cached[0].text
 
 
 def test_debug_prints_extraction_and_cache_usage(monkeypatch, capsys):
@@ -76,7 +76,7 @@ def test_debug_prints_extraction_and_cache_usage(monkeypatch, capsys):
     assert '"Joe Nobody" -> null' in lines
     assert "week: 7" in lines
     assert "scoring_format: null" in lines
-    assert "cache_creation_input_tokens=0, cache_read_input_tokens=21132" in lines
+    assert "cache_write_tokens=0, cache_read_tokens=21132" in lines
 
 
 def test_no_debug_output_by_default(monkeypatch, capsys):

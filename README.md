@@ -79,9 +79,11 @@ All code lives in the `ffassistant/` package:
     (`answer` markdown, `citations`). The LLM cites the news ids it relied on;
     ids not in the context are dropped.
 - `clients/` — raw third-party access, so the stages never have to know how a
-  dependency is actually called. `nflreadpy_client.py` (nflreadpy) and
-  `anthropic_client.py` (one generic structured-output call; prompts and output
-  schemas live in the stages).
+  dependency is actually called. `nflreadpy_client.py` (nflreadpy),
+  `rss_client.py` (feed HTTP), and `llm_client.py`, a provider-neutral `LLMClient`
+  interface with one structured-output call (`generate_structured`), picked by
+  `config.LLM_PROVIDER` via `get_llm_client()` and implemented for Anthropic in
+  `anthropic_client.py`. Prompts and output schemas live in the stages.
 - `config.py` — the news retrieval knobs (`NEWS_TOP_K`, `NEWS_LOOKBACK_DAYS`,
   `NEWS_MAX_SUMMARY_CHARS`), the dev-time `SEASON` pin (the current week comes from the
   schedule at run time), the

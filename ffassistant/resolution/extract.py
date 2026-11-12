@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ffassistant.clients.anthropic_client import StructuredResponse, parse_structured
+from ffassistant.clients.llm_client import StructuredResponse, SystemBlock, get_llm_client
 from ffassistant.config import PARSER_MODEL, SEASON
 from ffassistant.resolution.models import ExtractedRequest
 from ffassistant.resolution.roster import load_fantasy_roster, render_roster
@@ -35,8 +35,8 @@ def _print_debug(response: StructuredResponse[ExtractedRequest]) -> None:
     print(f"week: {extracted.week if extracted.week is not None else 'null'}")
     print(f"scoring_format: {extracted.scoring_format or 'null'}")
     print(
-        f"cache_creation_input_tokens={usage.cache_creation_input_tokens}, "
-        f"cache_read_input_tokens={usage.cache_read_input_tokens}"
+        f"cache_write_tokens={usage.cache_write_tokens}, "
+        f"cache_read_tokens={usage.cache_read_tokens}"
     )
     print("-------------------------")
     print()
@@ -48,14 +48,11 @@ def extract(prompt: str, current_week: int, debug: bool = False) -> ExtractedReq
         season=SEASON, current_week=current_week, next_week=current_week + 1
     )
     system = [
-        {"type": "text", "text": instructions},
-        {
-            "type": "text",
-            "text": f"Fantasy roster for {SEASON}:\n{render_roster(roster)}",
-            "cache_control": {"type": "ephemeral"},
-        },
+        SystemBlock(text=instructions),
+        SystemBlock(text=f"Fantasy roster for {SEASON}:\n{render_roster(roster)}", cache=True),
     ]
-    response = parse_structured(
+    client = get_llm_client()
+    response = client.generate_structured(
         model=PARSER_MODEL,
         system=system,
         user_content=prompt,

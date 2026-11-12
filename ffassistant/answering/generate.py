@@ -12,7 +12,7 @@ from ffassistant.answering.sources.injuries import injuries
 from ffassistant.answering.sources.news import news
 from ffassistant.answering.sources.recent_stats import recent_stats
 from ffassistant.answering.sources.schedule import ScheduleData, schedule
-from ffassistant.clients.anthropic_client import parse_structured
+from ffassistant.clients.llm_client import SystemBlock, get_llm_client
 from ffassistant.config import ANSWER_MODEL
 from ffassistant.resolution.models import ValidatedRequest
 
@@ -98,9 +98,10 @@ def answer(
         print(context)
         print("----------------------")
         print()
-    generated = parse_structured(
+    client = get_llm_client()
+    generated = client.generate_structured(
         model=ANSWER_MODEL,
-        system=[{"type": "text", "text": _SYSTEM_PROMPT}],
+        system=[SystemBlock(text=_SYSTEM_PROMPT)],
         user_content=context,
         output_model=GeneratedAnswer,
         max_tokens=2048,
