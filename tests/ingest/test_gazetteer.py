@@ -69,29 +69,29 @@ def test_player_keys_drop_suffix(monkeypatch):
 def test_team_name_and_nickname_are_aliases(monkeypatch):
     teams = _gazetteer(monkeypatch).teams
 
-    assert teams["washington commanders"] == "WAS"
-    assert teams["commanders"] == "WAS"
+    assert teams["Washington Commanders"] == "WAS"
+    assert teams["Commanders"] == "WAS"
 
 
 def test_city_alias_only_when_unique(monkeypatch):
     teams = _gazetteer(monkeypatch).teams
 
-    assert teams["washington"] == "WAS"
-    assert "new york" not in teams
-    assert "los angeles" not in teams
+    assert teams["Washington"] == "WAS"
+    assert "New York" not in teams
+    assert "Los Angeles" not in teams
 
 
 def test_abbreviations_are_not_aliases(monkeypatch):
     teams = _gazetteer(monkeypatch).teams
 
-    assert "was" not in teams and "buf" not in teams
+    assert "WAS" not in teams and "BUF" not in teams
 
 
 def test_only_current_teams(monkeypatch):
     teams = _gazetteer(monkeypatch).teams
 
-    assert teams["rams"] == "LA"
-    assert "st louis rams" not in teams
+    assert teams["Rams"] == "LA"
+    assert "St Louis Rams" not in teams
     assert "LAR" not in teams.values()
 
 
@@ -99,3 +99,16 @@ def test_name_key():
     assert name_key("A.J. Brown") == name_key("AJ Brown") == "aj brown"
     assert name_key("Marvin Harrison Jr.") == "marvin harrison"
     assert name_key("Ja’Marr  Chase") == "ja'marr chase"
+
+
+def test_find_matches_team_aliases_case_sensitively(monkeypatch):
+    gazetteer = _gazetteer(monkeypatch)
+
+    assert gazetteer.find("The Bills beat the Jets").teams == {"BUF", "NYJ"}
+    assert gazetteer.find("He paid his bills and the jets flew over").teams == set()
+
+
+def test_find_matches_player_names_in_any_case(monkeypatch):
+    mentions = _gazetteer(monkeypatch).find("JOE THUNEY and sauce gardner")
+
+    assert mentions.players == [[("00-4", "CHI")], [("00-3", "IND")]]

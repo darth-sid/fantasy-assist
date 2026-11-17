@@ -21,7 +21,7 @@ def _item(doc_id: str, title: str) -> NewsItem:
 def _setup(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(store, "ITEMS_PATH", tmp_path / "items.jsonl")
     monkeypatch.setattr(store, "TAGS_PATH", tmp_path / "tags.jsonl")
-    gazetteer = Gazetteer(players={}, teams={"raiders": "LV", "bills": "BUF"})
+    gazetteer = Gazetteer(players={}, teams={"Raiders": "LV", "Bills": "BUF"})
     monkeypatch.setattr(index_module, "load_gazetteer", lambda season: gazetteer)
     store.append_items([_item("a", "Raiders win"), _item("b", "Bills win")])
     store.append_tags([NewsTags(doc_id="a", player_ids=[], teams=["OLD"])])

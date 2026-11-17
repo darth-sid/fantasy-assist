@@ -14,30 +14,50 @@ _CURLY_QUOTES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
 _NAME_SUFFIX = re.compile(r"\s+(jr|sr|ii|iii|iv)$")
 
 
+def _clean(text: str) -> str:
+    text = text.translate(_CURLY_QUOTES).replace(".", "")
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def name_key(text: str) -> str:
-    """Normalizes a name or text for matching: lowercase, no periods, no trailing suffix."""
-    key = text.lower().translate(_CURLY_QUOTES).replace(".", "")
-    key = re.sub(r"\s+", " ", key).strip()
-    return _NAME_SUFFIX.sub("", key)
+    """Normalizes a name for matching: lowercase, no periods, no trailing suffix."""
+    return _NAME_SUFFIX.sub("", _clean(text).lower())
+
+
+@dataclass
+class Mentions:
+    """What a text mentions: candidate players per name, and named teams."""
+
+    players: list[list[tuple[str, str]]]  # one candidate list per player-name mention
+    teams: set[str]
 
 
 @dataclass
 class Gazetteer:
-    """Player and team name keys, matched as whole words in text."""
+    """Player names (any case) and team aliases (exact case), matched as whole words."""
 
     players: dict[str, list[tuple[str, str]]]  # name key -> [(gsis_id, team)]; several on a name clash
-    teams: dict[str, str]  # alias name key -> team abbreviation
+    teams: dict[str, str]  # alias, case preserved ("Raiders") -> team abbreviation
     _pattern: re.Pattern = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        # Longest first, so "parker washington" is consumed as a player before "washington" can match a team.
+        # Longest first, so "Parker Washington" is consumed as a player before "Washington" can match a team.
         keys = sorted(set(self.players) | set(self.teams), key=len, reverse=True)
-        alternation = "|".join(re.escape(key) for key in keys) or r"(?!)"
-        self._pattern = re.compile(rf"(?<!\w)(?:{alternation})(?!\w)")
+        # Team aliases are case-sensitive so "bills" or "jets" as ordinary words don't match.
+        alternation = "|".join(
+            f"(?-i:{re.escape(key)})" if key in self.teams else re.escape(key) for key in keys
+        )
+        self._pattern = re.compile(rf"(?<!\w)(?:{alternation or '(?!)'})(?!\w)", re.IGNORECASE)
 
-    def find(self, text: str) -> list[str]:
-        """Returns the name keys mentioned in text, in order; overlaps go to the longer key."""
-        return self._pattern.findall(name_key(text))
+    def find(self, text: str) -> Mentions:
+        """Returns the players and teams mentioned in text; overlaps go to the longer name."""
+        mentions = Mentions(players=[], teams=set())
+        for match in self._pattern.findall(_clean(text)):
+            if match in self.teams:
+                mentions.teams.add(self.teams[match])
+            if (candidates := self.players.get(name_key(match))) is not None:
+                mentions.players.append(candidates)
+        return mentions
 
 
 def _players(rosters: pl.DataFrame) -> dict[str, list[tuple[str, str]]]:
@@ -64,10 +84,10 @@ def _teams(teams: pl.DataFrame, current: set[str]) -> dict[str, str]:
     aliases = {}
     for row in rows:
         abbr = row["team_abbr"]
-        aliases[name_key(row["team_name"])] = abbr
-        aliases[name_key(row["team_nick"])] = abbr
+        aliases[_clean(row["team_name"])] = abbr
+        aliases[_clean(row["team_nick"])] = abbr
         if city_counts[cities[abbr]] == 1:
-            aliases[name_key(cities[abbr])] = abbr
+            aliases[_clean(cities[abbr])] = abbr
     return aliases
 
 

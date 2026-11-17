@@ -17,7 +17,7 @@ def feeds(monkeypatch, tmp_path):
     served: dict[str, str | Exception] = {}
     monkeypatch.setattr(store, "ITEMS_PATH", tmp_path / "news" / "items.jsonl")
     monkeypatch.setattr(store, "TAGS_PATH", tmp_path / "news" / "tags.jsonl")
-    gazetteer = Gazetteer(players={"micah parsons": [("00-9", "GB")]}, teams={"packers": "GB"})
+    gazetteer = Gazetteer(players={"micah parsons": [("00-9", "GB")]}, teams={"Packers": "GB"})
     monkeypatch.setattr(index_module, "load_gazetteer", lambda season: gazetteer)
     monkeypatch.setattr(poll_module, "FEEDS", {k: f"https://{k}.test/feed" for k in ("rotowire", "generic")})
 

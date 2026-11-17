@@ -120,21 +120,27 @@ nothing from it.
 - `ingest/gazetteer.py`: `load_gazetteer(season) -> Gazetteer` from
   `load_rosters` and `load_teams`. `players`: name key -> `[(gsis_id, team)]`,
   every position, non-null `gsis_id`, latest-week row per player; a name clash
-  keeps every player. `teams`: name key -> abbreviation for `team_name`,
+  keeps every player. `teams`: alias -> abbreviation for `team_name`,
   `team_nick`, and the city (`team_name` minus `team_nick`) only when no other
-  team shares it (so `washington` yes, `new york` / `los angeles` no);
-  abbreviations are never aliases. Only the season's roster teams are used,
+  team shares it (so `Washington` yes, `New York` / `Los Angeles` no);
+  abbreviations are never aliases. Aliases keep their case and match
+  **case-sensitively** (`Bills`, not `bills`), so ordinary words don't tag
+  teams; player names match in any case. Only the season's roster teams are used,
   since `load_teams` also lists relocated franchises and a duplicate Rams row.
-  `Gazetteer.find(text)` returns whole-word matches in the name-keyed text,
-  longest key first and non-overlapping, so `parker washington` is a player
-  and not the WAS city alias. `name_key`: lowercase, curly quotes straightened,
+  `Gazetteer.find(text) -> Mentions` (`players`: one candidate list per
+  player-name mention; `teams`: the named teams) matches whole words, longest
+  name first and non-overlapping, so `Parker Washington` is a player and not
+  the WAS city alias. `name_key`: lowercase, curly quotes straightened,
   periods removed, whitespace collapsed, a trailing `jr`/`sr`/`ii`/`iii`/`iv`
   removed.
-- `ingest/tag.py`: `tag(item, gazetteer) -> NewsTags`. `rotowire`: players
-  from the title text before the first `": "` only (summaries use last names
-  and name past opponents), teams = those players' teams. Other sources:
-  players and team aliases found in the title or summary, plus the matched
-  players' teams. Every clash match is tagged. Lists are deduped and sorted.
+- `ingest/tag.py`: `tag(item, gazetteer) -> NewsTags`. **Shared names:** a
+  mention matching several players tags only those whose team the item names
+  (a team alias in its title or summary); if none of them is named, every match
+  is tagged. `rotowire`: players from the title text before the first `": "`
+  only (summaries use last names and name opponents); the summary's team names
+  are used only to break shared-name ties, never tagged; teams = the tagged
+  players' teams. Other sources: players and team aliases found in the title or
+  summary, plus the tagged players' teams. Lists are deduped and sorted.
   A player's team is their roster team at tagging time, so a traded player's
   old items move only on `--rebuild`.
 - `ingest/index.py` (`python -m ffassistant.ingest.index [--rebuild]`):
@@ -629,3 +635,10 @@ The **body is authoritative** (current state); the log is provenance.
   `NewsTags`. Supersedes the 2026-11-10 dependency entry.
 - 2026-11-16 — Code style: utility modules and their public API get very short
   docstrings (1 line preferably, 2 at most); still no huge docstrings.
+- 2026-11-16 — Team aliases match case-sensitively (`Bills`, not `bills`) so
+  ordinary words don't tag teams; player names still match in any case.
+- 2026-11-16 — Shared names: tag only the players whose team the item names (a
+  team alias in title or summary), falling back to tagging every match. For
+  RotoWire, summary team names are used only for this tie-break, never as tags.
+  Refines the 2026-11-16 "a name clash tags every match" rule, which is now the
+  fallback.

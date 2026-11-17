@@ -11,7 +11,15 @@ GAZETTEER = Gazetteer(
         "ja'marr chase": [("00-6", "CIN")],
         "parker washington": [("00-7", "JAX")],
     },
-    teams={"las vegas raiders": "LV", "raiders": "LV", "las vegas": "LV", "washington": "WAS"},
+    teams={
+        "Las Vegas Raiders": "LV",
+        "Raiders": "LV",
+        "Las Vegas": "LV",
+        "Washington": "WAS",
+        "Bills": "BUF",
+        "Buffalo": "BUF",
+        "Jaguars": "JAX",
+    },
 )
 
 
@@ -64,10 +72,36 @@ def test_player_name_containing_a_city_does_not_tag_that_team():
     assert (tags.player_ids, tags.teams) == (["00-7"], ["JAX"])
 
 
-def test_name_clash_tags_every_match():
+def test_name_clash_tags_every_match_when_no_team_is_named():
     tags = tag(_item("Josh Allen throws three touchdowns"), GAZETTEER)
 
     assert (tags.player_ids, tags.teams) == (["00-2", "00-3"], ["BUF", "JAX"])
+
+
+def test_name_clash_resolved_by_named_team():
+    tags = tag(_item("Josh Allen throws three touchdowns", "The Bills won again."), GAZETTEER)
+
+    assert (tags.player_ids, tags.teams) == (["00-2"], ["BUF"])
+
+
+def test_name_clash_falls_back_when_named_team_matches_no_candidate():
+    tags = tag(_item("Josh Allen throws three touchdowns against Washington"), GAZETTEER)
+
+    assert (tags.player_ids, tags.teams) == (["00-2", "00-3"], ["BUF", "JAX", "WAS"])
+
+
+def test_rotowire_name_clash_resolved_by_summary_team_without_tagging_it():
+    item = _item("Josh Allen: Sacks leader", "Allen leads the Jaguars against Washington.", "rotowire")
+
+    tags = tag(item, GAZETTEER)
+
+    assert (tags.player_ids, tags.teams) == (["00-3"], ["JAX"])
+
+
+def test_lowercase_team_words_do_not_tag():
+    tags = tag(_item("Bettors pay their bills", "Fans watched the raiders movie."), GAZETTEER)
+
+    assert tags.teams == []
 
 
 def test_name_keys_handle_periods_suffixes_and_curly_apostrophes():
