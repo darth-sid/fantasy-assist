@@ -10,3 +10,9 @@ class NewsItem(BaseModel):
     published_at: str
     fetched_at: str
     raw: dict[str, str | None]
+
+
+class NewsTags(BaseModel):
+    doc_id: str
+    player_ids: list[str]  # gsis_ids
+    teams: list[str]  # team abbreviations

@@ -1,16 +1,19 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from ffassistant.answering.models import ResolvedContext, SourceResult
-from ffassistant.config import NEWS_LOOKBACK_DAYS, NEWS_MAX_SUMMARY_CHARS, NEWS_TOP_K
-from ffassistant.ingest.models import NewsItem
-from ffassistant.ingest.store import iter_items
+from ffassistant.config import (
+    NEWS_LOOKBACK_DAYS,
+    NEWS_MAX_SUMMARY_CHARS,
+    NEWS_OPPONENT_TOP_K,
+    NEWS_TEAM_TOP_K,
+    NEWS_TOP_K,
+)
+from ffassistant.ingest.models import NewsItem, NewsTags
+from ffassistant.ingest.store import iter_items, iter_tags
 
-_CURLY_QUOTES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
-_SUFFIX = re.compile(r"\s+(jr|sr|ii|iii|iv)$")
 _ROTOWIRE_BOILERPLATE = "Visit RotoWire.com for more analysis on this update."
 
 
@@ -27,21 +30,9 @@ class NewsEntry:
 @dataclass
 class NewsData:
     cutoff: str
-    items: list[NewsEntry]
-
-
-def name_key(text: str) -> str:
-    key = text.lower().translate(_CURLY_QUOTES).replace(".", "")
-    key = re.sub(r"\s+", " ", key).strip()
-    return _SUFFIX.sub("", key)
-
-
-def _is_about(item: NewsItem, player_key: str) -> bool:
-    if item.source == "rotowire":
-        # RotoWire titles lead with the full name; summaries use last names only.
-        return name_key(item.title.split(": ", 1)[0]) == player_key
-    pattern = rf"\b{re.escape(player_key)}\b"
-    return any(re.search(pattern, name_key(text)) for text in (item.title, item.summary))
+    player: list[NewsEntry]
+    team: list[NewsEntry]
+    opponent: list[NewsEntry]
 
 
 def _clean_summary(summary: str) -> str:
@@ -51,41 +42,58 @@ def _clean_summary(summary: str) -> str:
     return summary
 
 
-def news(ctx: ResolvedContext, cutoff: datetime) -> SourceResult[NewsData]:
+def _entry(item: NewsItem) -> NewsEntry:
+    return NewsEntry(
+        doc_id=item.doc_id,
+        source=item.source,
+        published_at=item.published_at,
+        title=item.title,
+        summary=_clean_summary(item.summary),
+        url=item.url,
+    )
+
+
+def news(ctx: ResolvedContext, opponent: str, cutoff: datetime) -> SourceResult[NewsData]:
     source = "news"
     as_of = cutoff.isoformat(timespec="seconds")
 
     try:
-        player_key = name_key(ctx.player_name)
+        tags: dict[str, NewsTags] = {entry.doc_id: entry for entry in iter_tags()}
         window_start = cutoff - timedelta(days=NEWS_LOOKBACK_DAYS)
-        matches = [
-            item
-            for item in iter_items()
-            if window_start <= datetime.fromisoformat(item.published_at) < cutoff
-            and _is_about(item, player_key)
-        ]
+        in_window = sorted(
+            (
+                (item, tags[item.doc_id])
+                for item in iter_items()
+                if item.doc_id in tags
+                and window_start <= datetime.fromisoformat(item.published_at) < cutoff
+            ),
+            key=lambda pair: datetime.fromisoformat(pair[0].published_at),
+            reverse=True,
+        )
 
-        if not matches:
+        # Each item lands in the first bucket it qualifies for: player, then team, then opponent.
+        buckets: dict[str, list[NewsItem]] = {"player": [], "team": [], "opponent": []}
+        for item, item_tags in in_window:
+            if ctx.player_id in item_tags.player_ids:
+                buckets["player"].append(item)
+            elif ctx.team in item_tags.teams:
+                buckets["team"].append(item)
+            elif opponent in item_tags.teams:
+                buckets["opponent"].append(item)
+
+        if not any(buckets.values()):
             return SourceResult(source=source, status="empty", as_of=as_of)
-
-        matches.sort(key=lambda item: datetime.fromisoformat(item.published_at), reverse=True)
-        entries = [
-            NewsEntry(
-                doc_id=item.doc_id,
-                source=item.source,
-                published_at=item.published_at,
-                title=item.title,
-                summary=_clean_summary(item.summary),
-                url=item.url,
-            )
-            for item in matches[:NEWS_TOP_K]
-        ]
 
         return SourceResult(
             source=source,
             status="ok",
             as_of=as_of,
-            data=NewsData(cutoff=as_of, items=entries),
+            data=NewsData(
+                cutoff=as_of,
+                player=[_entry(item) for item in buckets["player"][:NEWS_TOP_K]],
+                team=[_entry(item) for item in buckets["team"][:NEWS_TEAM_TOP_K]],
+                opponent=[_entry(item) for item in buckets["opponent"][:NEWS_OPPONENT_TOP_K]],
+            ),
         )
 
     except Exception as exc:

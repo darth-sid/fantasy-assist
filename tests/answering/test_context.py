@@ -605,13 +605,14 @@ def test_stats_lines_fall_back_to_vs_when_schedule_fails():
     assert any(line.startswith("Week 2 vs PHI: ") for line in lines)
 
 
-def _news_result(*entries: NewsEntry) -> SourceResult[NewsData]:
+def _news_result(
+    player: list[NewsEntry] = (), team: list[NewsEntry] = (), opponent: list[NewsEntry] = ()
+) -> SourceResult[NewsData]:
     cutoff = "2026-11-15T18:00:00+00:00"
-    if not entries:
+    if not (player or team or opponent):
         return SourceResult(source="news", status="empty", as_of=cutoff)
-    return SourceResult(
-        source="news", status="ok", as_of=cutoff, data=NewsData(cutoff=cutoff, items=list(entries))
-    )
+    data = NewsData(cutoff=cutoff, player=list(player), team=list(team), opponent=list(opponent))
+    return SourceResult(source="news", status="ok", as_of=cutoff, data=data)
 
 
 def _news_entry(summary: str = "Ferguson was expected to return ...") -> NewsEntry:
@@ -632,22 +633,35 @@ def _news_context(
     return _render([_inputs(ctx, _ok_result(), sched, news=news)]).splitlines()
 
 
-def test_news_items_render_after_matchup_before_past_weeks():
-    lines = _news_context(_news_result(_news_entry()))
+def test_news_groups_render_after_matchup_before_past_weeks():
+    team_entry = NewsEntry(
+        doc_id="team0000",
+        source="espn",
+        published_at="2026-11-12T10:00:00+00:00",
+        title="Cowboys sign WR",
+        summary="Depth move.",
+        url="https://example.com/t",
+    )
+    lines = _news_context(_news_result(player=[_news_entry()], team=[team_entry]))
 
     caveat = lines.index(
         "Points allowed is a small early-season sample and is not adjusted for opponents faced."
     )
-    assert lines[caveat + 1] == "News (most recent first, before 2026-11-15 18:00 UTC, last 14 days):"
-    assert lines[caveat + 2] == (
+    assert lines[caveat + 1 : caveat + 9] == [
+        "News (most recent first, before 2026-11-15 18:00 UTC, last 14 days):",
+        "About CeeDee Lamb:",
         "- [3f9a1c2e7b4d0a16] 2026-11-13 21:30 UTC, rotowire: "
-        "Terrance Ferguson: Suffers hamstring injury. Ferguson was expected to return ..."
-    )
-    assert lines[caveat + 3].startswith("Week 1 ")
+        "Terrance Ferguson: Suffers hamstring injury. Ferguson was expected to return ...",
+        "DAL team news:",
+        "- [team0000] 2026-11-12 10:00 UTC, espn: Cowboys sign WR. Depth move.",
+        "Opponent (IND) news:",
+        "- none",
+        "Week 1 vs NYG: receptions=6, fantasy_points (PPR)=18.4",
+    ]
 
 
 def test_news_item_without_summary_renders_title_only():
-    lines = _news_context(_news_result(_news_entry(summary="")))
+    lines = _news_context(_news_result(player=[_news_entry(summary="")]))
 
     assert (
         "- [3f9a1c2e7b4d0a16] 2026-11-13 21:30 UTC, rotowire: "

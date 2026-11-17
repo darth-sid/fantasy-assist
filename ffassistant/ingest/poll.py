@@ -10,6 +10,7 @@ import feedparser
 from ffassistant.clients.rss_client import fetch_feed
 from ffassistant.config import FEEDS
 from ffassistant.ingest import store
+from ffassistant.ingest.index import index
 from ffassistant.ingest.models import NewsItem
 from ffassistant.ingest.overrides import DATE_PARSERS, ID_KEYS, default_id_key
 
@@ -92,4 +93,9 @@ def poll() -> int:
         except Exception as e:
             failures += 1
             print(f"{source}: error: {e}")
+    try:
+        print(f"index: tagged {index()} items")
+    except Exception as e:
+        # Untagged items are picked up by the next successful catch-up.
+        print(f"index: error: {e}")
     return 1 if failures == len(FEEDS) else 0

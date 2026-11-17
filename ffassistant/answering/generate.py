@@ -11,7 +11,7 @@ from ffassistant.answering.sources.defense import defense
 from ffassistant.answering.sources.injuries import injuries
 from ffassistant.answering.sources.news import news
 from ffassistant.answering.sources.recent_stats import recent_stats
-from ffassistant.answering.sources.schedule import ScheduleData, schedule
+from ffassistant.answering.sources.schedule import ScheduleData, ScheduleWeek, schedule
 from ffassistant.clients.llm_client import SystemBlock, get_llm_client
 from ffassistant.config import ANSWER_MODEL
 from ffassistant.resolution.models import ValidatedRequest
@@ -35,6 +35,9 @@ _SYSTEM_PROMPT = """Answer the user's fantasy football question using only the p
 - Only cite ids that appear in the context.
 - If news conflicts with the injury report, say so and favor whichever is more
   recent.
+- Team and opponent news are context (teammate availability, opposing
+  defenders). Don't let them outweigh the player's own news and production.
+  Cite them the same way.
 """
 
 
@@ -43,11 +46,15 @@ class GeneratedAnswer(BaseModel):
     cited_doc_ids: list[str]
 
 
-def news_cutoff(sched: SourceResult[ScheduleData], week: int, now: datetime) -> datetime | None:
+def _target_week(sched: SourceResult[ScheduleData], week: int) -> ScheduleWeek | None:
     if sched.status != "ok":
         return None
-    target = next(w for w in sched.data.weeks if w.week == week)
-    if target.kickoff is None:
+    return next(w for w in sched.data.weeks if w.week == week)
+
+
+def news_cutoff(sched: SourceResult[ScheduleData], week: int, now: datetime) -> datetime | None:
+    target = _target_week(sched, week)
+    if target is None or target.kickoff is None:
         return None
     return min(now, datetime.fromisoformat(target.kickoff))
 
@@ -68,7 +75,11 @@ def gather_inputs(validated: ValidatedRequest, now: datetime | None = None) -> l
                 schedule=sched,
                 defense=defense(ctx),
                 injuries=injuries(ctx),
-                news=news(ctx, cutoff) if cutoff is not None else None,
+                news=(
+                    news(ctx, _target_week(sched, ctx.week).opponent, cutoff)
+                    if cutoff is not None
+                    else None
+                ),
             )
         )
     return inputs
@@ -79,7 +90,8 @@ def _citations(cited_doc_ids: list[str], players: list[PlayerInputs]) -> list[Ci
         item.doc_id: item
         for inputs in players
         if inputs.news is not None and inputs.news.status == "ok"
-        for item in inputs.news.data.items
+        for bucket in (inputs.news.data.player, inputs.news.data.team, inputs.news.data.opponent)
+        for item in bucket
     }
     return [
         Citation.from_news_entry(rendered[doc_id])

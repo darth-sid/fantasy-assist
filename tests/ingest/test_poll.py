@@ -1,5 +1,6 @@
 import json
 
+import ffassistant.ingest.index as index_module
 from ffassistant.ingest import poll as poll_module
 from ffassistant.ingest import store
 
@@ -102,3 +103,25 @@ def test_date_parser_and_id_key_overrides_are_independent(feeds, monkeypatch):
     rotowire = [i for i in store.iter_items() if i.source == "rotowire"]
     assert len(rotowire) == 1
     assert rotowire[0].published_at == "2026-11-06T22:30:00+00:00"
+
+
+def test_poll_tags_new_items(feeds, capsys):
+    poll_module.poll()
+
+    tags = {t.doc_id: t for t in store.iter_tags()}
+    item = _items()["Parsons & Packers"]
+    assert tags[item.doc_id].teams == ["GB"]
+    assert set(tags) == {i.doc_id for i in store.iter_items()}
+    assert "index: tagged 4 items" in capsys.readouterr().out
+
+
+def test_gazetteer_failure_keeps_items_and_reports(feeds, monkeypatch, capsys):
+    def fail(season):
+        raise RuntimeError("roster down")
+
+    monkeypatch.setattr(index_module, "load_gazetteer", fail)
+
+    assert poll_module.poll() == 0
+    assert len(_items()) == 4
+    assert list(store.iter_tags()) == []
+    assert "index: error: roster down" in capsys.readouterr().out

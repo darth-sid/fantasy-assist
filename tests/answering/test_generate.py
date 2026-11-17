@@ -85,8 +85,8 @@ def test_no_cutoff_when_schedule_fails():
 def _stub_sources(monkeypatch, sched, news_calls: list) -> None:
     empty = lambda name: SourceResult(source=name, status="empty", as_of="Week 7")
 
-    def fake_news(ctx, cutoff):
-        news_calls.append(cutoff)
+    def fake_news(ctx, opponent, cutoff):
+        news_calls.append((opponent, cutoff))
         return empty("news")
 
     monkeypatch.setattr(generate_module, "player_context", lambda player, season, week, fmt: CTX)
@@ -103,7 +103,7 @@ def test_gather_inputs_fetches_news_with_cutoff(monkeypatch):
 
     [inputs] = gather_inputs(_validated(), now=NOW)
 
-    assert calls == [NOW]
+    assert calls == [("IND", NOW)]
     assert inputs.news.source == "news"
 
 
@@ -128,25 +128,25 @@ def test_gather_inputs_skips_news_when_schedule_fails(monkeypatch):
     assert inputs.news is None
 
 
-def test_hallucinated_cited_ids_are_dropped(monkeypatch):
+def test_citations_come_from_every_bucket_and_hallucinated_ids_are_dropped(monkeypatch):
     _stub_sources(monkeypatch, _schedule("2026-10-25T17:00:00+00:00"), [])
-    entry = NewsEntry(
-        doc_id="real",
-        source="rotowire",
-        published_at="2026-10-19T15:00:00+00:00",
-        title="CeeDee Lamb: Practices fully",
-        summary="",
-        url="https://example.com/real",
+    def entry(doc_id: str) -> NewsEntry:
+        return NewsEntry(
+            doc_id=doc_id,
+            source="rotowire",
+            published_at="2026-10-19T15:00:00+00:00",
+            title=f"Title {doc_id}",
+            summary="",
+            url=f"https://example.com/{doc_id}",
+        )
+
+    data = NewsData(
+        cutoff=NOW.isoformat(), player=[entry("p")], team=[entry("t")], opponent=[entry("o")]
     )
-    news_result = SourceResult(
-        source="news",
-        status="ok",
-        as_of=NOW.isoformat(),
-        data=NewsData(cutoff=NOW.isoformat(), items=[entry]),
-    )
-    monkeypatch.setattr(generate_module, "news", lambda ctx, cutoff: news_result)
+    news_result = SourceResult(source="news", status="ok", as_of=NOW.isoformat(), data=data)
+    monkeypatch.setattr(generate_module, "news", lambda ctx, opponent, cutoff: news_result)
     reply = StructuredResponse(
-        parsed=GeneratedAnswer(answer="Start.", cited_doc_ids=["fake", "real"]), usage=None
+        parsed=GeneratedAnswer(answer="Start.", cited_doc_ids=["o", "fake", "p", "t"]), usage=None
     )
     monkeypatch.setattr(
         generate_module, "get_llm_client", lambda: FakeClient(lambda **kwargs: reply)
@@ -154,14 +154,13 @@ def test_hallucinated_cited_ids_are_dropped(monkeypatch):
 
     result = answer(_validated(), now=NOW)
 
-    assert result.citations == [
-        Citation(
-            doc_id="real",
-            title="CeeDee Lamb: Practices fully",
-            published_at="2026-10-19T15:00:00+00:00",
-            url="https://example.com/real",
-        )
-    ]
+    assert [citation.doc_id for citation in result.citations] == ["o", "p", "t"]
+    assert result.citations[0] == Citation(
+        doc_id="o",
+        title="Title o",
+        published_at="2026-10-19T15:00:00+00:00",
+        url="https://example.com/o",
+    )
 
 
 def test_answer_runs_sources_and_returns_generated_output(monkeypatch):

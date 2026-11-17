@@ -1,7 +1,10 @@
 from pathlib import Path
 
+from ffassistant.ingest.gazetteer import Gazetteer
+
 import pytest
 
+import ffassistant.ingest.index as index_module
 import ffassistant.ingest.poll as poll_module
 import ffassistant.ingest.store as store
 
@@ -13,6 +16,9 @@ def feeds(monkeypatch, tmp_path):
     """Maps feed key -> fixture filename or Exception; fetch_feed serves them."""
     served: dict[str, str | Exception] = {}
     monkeypatch.setattr(store, "ITEMS_PATH", tmp_path / "news" / "items.jsonl")
+    monkeypatch.setattr(store, "TAGS_PATH", tmp_path / "news" / "tags.jsonl")
+    gazetteer = Gazetteer(players={"micah parsons": [("00-9", "GB")]}, teams={"packers": "GB"})
+    monkeypatch.setattr(index_module, "load_gazetteer", lambda season: gazetteer)
     monkeypatch.setattr(poll_module, "FEEDS", {k: f"https://{k}.test/feed" for k in ("rotowire", "generic")})
 
     def fake_fetch(url):

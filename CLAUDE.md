@@ -19,8 +19,10 @@ what's decided; when a decision is missing, ask rather than invent. One slice at
 
 ## Code style
 
-No huge docstrings. If a function is genuinely complicated enough to seem to need one,
-ask Sid rather than writing it.
+No huge docstrings. Utility modules (e.g. `ingest/gazetteer.py`) and their public
+API functions/classes get a very short docstring, one line preferably, two at most.
+If a function is genuinely complicated enough to seem to need more, ask Sid rather
+than writing it.
 
 ## Current edge
 
@@ -36,7 +38,8 @@ news items, independent of the other two), `resolution/` (stage 1, prompt ->
 
 **Dependency rule:** `answering/` may import `resolution.models` (the
 `ValidatedRequest` handoff type and its parts), and `ingest.store` (read
-functions only: `iter_items`) and `ingest.models.NewsItem`; `resolution/` never
+functions only: `iter_items`, `iter_tags`) and `ingest.models.NewsItem` /
+`NewsTags`; `resolution/` never
 imports from `answering/`; `ingest/` imports nothing from `resolution/` or
 `answering/`. There is no shared `contracts.py`; each type lives in the stage
 that owns it.
@@ -79,7 +82,8 @@ rendered context it already built before the LLM call.
 
 `config.py` pins `SEASON = 2026`, `DEFAULT_SCORING_FORMAT = "PPR"`, and the
 models `PARSER_MODEL` / `ANSWER_MODEL` (both `"claude-haiku-4-5"`), and the
-news retrieval knobs `NEWS_TOP_K = 5`, `NEWS_LOOKBACK_DAYS = 14`,
+news retrieval knobs `NEWS_TOP_K = 5` (player bucket), `NEWS_TEAM_TOP_K = 3`,
+`NEWS_OPPONENT_TOP_K = 3`, `NEWS_LOOKBACK_DAYS = 14`,
 `NEWS_MAX_SUMMARY_CHARS = 500`. There is no current-week pin; the current week
 comes from the schedule at run time.
 
@@ -89,16 +93,19 @@ comes from the schedule at run time.
 every feed in `config.FEEDS` per invocation, then exit. Scheduling is external
 (cron/launchd); poll frequency is not in config. It builds the news history that
 retrieval reads. **Dependency rule:** `ingest/` imports nothing from
-`resolution/` or `answering/`; `answering/` may import only `ingest.store`'s read
-function (`iter_items`) and `ingest.models.NewsItem`; `resolution/` imports
+`resolution/` or `answering/` (it may use `clients/` and `config`);
+`answering/` may import only `ingest.store`'s read functions (`iter_items`,
+`iter_tags`) and `ingest.models.NewsItem` / `NewsTags`; `resolution/` imports
 nothing from it.
 
 - `clients/rss_client.py`: `fetch_feed(url) -> bytes`, raw HTTP only (`requests`,
   20 s timeout, `ffassistant/0.1` User-Agent; non-200 raises).
-- `ingest/store.py` is the only module that touches `items.jsonl`:
-  `load_doc_ids()`, `append_items(items)`, `iter_items()` (retrieval's read
-  interface, used by `answering/sources/news.py`; unused by ingest itself;
-  a missing file yields nothing). The path is `config.NEWS_DIR`
+- `ingest/store.py` is the only module that touches `data/news/`:
+  `load_doc_ids()`, `append_items(items)`, `iter_items()`, and for tags
+  `iter_tags()`, `append_tags(tags)`, `replace_tags(tags)` (writes a temp file
+  and renames it over `tags.jsonl`, so a failed rebuild never leaves it
+  half-written). `iter_items`/`iter_tags` are retrieval's read interface; a
+  missing file yields nothing. The path is `config.NEWS_DIR`
   (`data/news`) resolved against the repo root, so cwd doesn't matter under
   cron. `data/` is gitignored.
 - `ingest/poll.py`: loads stored `doc_id`s, then per feed independently
@@ -106,8 +113,34 @@ nothing from it.
   (malformed-but-has-entries -> warning and use them; no entries -> logged),
   builds `NewsItem`s, skips entries with no link and any `doc_id` already
   stored or seen earlier in the poll, and appends. One status line per feed
-  (`rotowire: 5 fetched, 2 new` / `espn: error: <reason>`); exit 1 only if every
-  feed failed. A second run immediately after adds nothing.
+  (`rotowire: 5 fetched, 2 new` / `espn: error: <reason>`). Then it runs the
+  index catch-up and prints `index: tagged N items`, or `index: error: <reason>`
+  if it fails (the items stay; the next successful catch-up tags them). Exit 1
+  only if every feed failed. A second run immediately after adds nothing.
+- `ingest/gazetteer.py`: `load_gazetteer(season) -> Gazetteer` from
+  `load_rosters` and `load_teams`. `players`: name key -> `[(gsis_id, team)]`,
+  every position, non-null `gsis_id`, latest-week row per player; a name clash
+  keeps every player. `teams`: name key -> abbreviation for `team_name`,
+  `team_nick`, and the city (`team_name` minus `team_nick`) only when no other
+  team shares it (so `washington` yes, `new york` / `los angeles` no);
+  abbreviations are never aliases. Only the season's roster teams are used,
+  since `load_teams` also lists relocated franchises and a duplicate Rams row.
+  `Gazetteer.find(text)` returns whole-word matches in the name-keyed text,
+  longest key first and non-overlapping, so `parker washington` is a player
+  and not the WAS city alias. `name_key`: lowercase, curly quotes straightened,
+  periods removed, whitespace collapsed, a trailing `jr`/`sr`/`ii`/`iii`/`iv`
+  removed.
+- `ingest/tag.py`: `tag(item, gazetteer) -> NewsTags`. `rotowire`: players
+  from the title text before the first `": "` only (summaries use last names
+  and name past opponents), teams = those players' teams. Other sources:
+  players and team aliases found in the title or summary, plus the matched
+  players' teams. Every clash match is tagged. Lists are deduped and sorted.
+  A player's team is their roster team at tagging time, so a traded player's
+  old items move only on `--rebuild`.
+- `ingest/index.py` (`python -m ffassistant.ingest.index [--rebuild]`):
+  `index(rebuild=False) -> int`. Default is catch-up, tagging every item with
+  no tags row; `--rebuild` re-tags every item and replaces `tags.jsonl` (after
+  a tagger change, or to pick up roster moves). Prints `tagged N items`.
 - `ingest/overrides.py`: two independent per-feed override registries keyed by
   the `FEEDS` key; a feed with no entry uses the defaults. `DATE_PARSERS[key]`
   (raw date string -> aware datetime) replaces feedparser's date parse, and
@@ -116,8 +149,10 @@ nothing from it.
   date span, description quality, link uniqueness, and whether feedparser parses
   its dates correctly; register an override only for what fails; record the
   findings in API_CONTEXT.md.
-- Storage: `data/news/items.jsonl`, one `NewsItem` per line, append-only, the
-  only file the collector writes. Items are kept forever; no raw XML snapshots.
+- Storage: `data/news/items.jsonl`, one `NewsItem` per line, append-only,
+  kept forever; no raw XML snapshots. `data/news/tags.jsonl`, one `NewsTags`
+  (`doc_id`, `player_ids` gsis_ids, `teams` abbreviations) per tagged item,
+  rebuildable from the items at any time.
 - `NewsItem`: `doc_id` (first 16 hex of sha256 of the normalized URL; for
   feeds with an `ID_KEYS` override, of that override's key; RotoWire: `url + "\n" + raw date string`), `url` (stripped,
   `#fragment` removed, nothing else), `source` (the `FEEDS` key), `title` and
@@ -126,7 +161,7 @@ nothing from it.
   date is missing or unparseable), `fetched_at` (poll time, ISO 8601 UTC),
   `raw` (`title`, `summary`, `link`, `published` as feedparser returned them).
 - Only feed title and summary are stored; linked articles are never fetched.
-  Player tagging, chunking, and embeddings are later steps, not in ingest.
+  Chunking and embeddings are later steps, not in ingest.
 
 ### Stage 1: resolution
 
@@ -231,24 +266,21 @@ the `SourceResult` envelope (`source`, `status`, `as_of`, `data`, `error`).
   `Questionable`, or null = listed without a game designation),
   `primary_injury`, `practice_status`. Reserve-list players drop off the
   report, which is why roster status is shown too.
-- `news.py` (`NewsData`: `cutoff`, `items: list[NewsEntry]`; `NewsEntry`:
-  `doc_id`, `source`, `published_at`, `title`, `summary`, `url`):
-  `news(ctx, cutoff)`, the one source that takes an extra argument. Minimal
-  recency-only retrieval (the baseline embeddings get compared against later):
-  no index, no embeddings, tagging by name match at retrieval time. Reads
-  `ingest.store.iter_items()` and keeps items about the player with
-  `cutoff - NEWS_LOOKBACK_DAYS <= published_at < cutoff`, newest first, top
-  `NEWS_TOP_K`. Name key (applied to the player's `full_name` and the matched
-  text): lowercase, curly quotes straightened, periods removed, whitespace
-  collapsed, a trailing `jr`/`sr`/`ii`/`iii`/`iv` removed. An item is about the
-  player when, for `rotowire`, the title text before the first `": "` has the
-  same name key (summaries use last names only, so never matched); for any
-  other source, the name key appears as whole words in the name-keyed title or
-  summary. Summaries have RotoWire's trailing `Visit RotoWire.com for more
-  analysis on this update.` stripped, then are truncated to
-  `NEWS_MAX_SUMMARY_CHARS` plus `...`. No matches (including a missing items
-  file) is `status="empty"`; `as_of` is the cutoff. Out of scope: team-level
-  news, teammate news, the RotoWire id crosswalk.
+- `news.py` (`NewsData`: `cutoff`, `player`, `team`, `opponent`, each a
+  `list[NewsEntry]`; `NewsEntry`: `doc_id`, `source`, `published_at`, `title`,
+  `summary`, `url`): `news(ctx, opponent, cutoff)`, the one source that takes
+  extra arguments (the target-week opponent and the cutoff). Recency-only
+  retrieval over the ingest-time tags (the baseline embeddings get compared
+  against later). Joins `iter_items()` with `iter_tags()` on `doc_id` (items
+  with no tags row are skipped) and keeps items with `cutoff -
+  NEWS_LOOKBACK_DAYS <= published_at < cutoff`, newest first. Each item lands in
+  the first bucket it qualifies for: player (`ctx.player_id` in `player_ids`),
+  then team (`ctx.team` in `teams`), then opponent (`opponent` in `teams`).
+  Caps are `NEWS_TOP_K` / `NEWS_TEAM_TOP_K` / `NEWS_OPPONENT_TOP_K`. Summaries
+  have RotoWire's trailing `Visit RotoWire.com for more analysis on this
+  update.` stripped, then are truncated to `NEWS_MAX_SUMMARY_CHARS` plus `...`.
+  `status="empty"` only when all three buckets are empty (including missing
+  files); `as_of` is the cutoff. Out of scope: the RotoWire id crosswalk.
 
 `answering/context.py`: `render_context(validated, players)` renders the raw
 prompt, week, and scoring format, then one `Could not resolve "<mention>":
@@ -293,9 +325,10 @@ points-allowed data for WRs before Week 7` for defense `error`/`empty`;
 no row; and `Matchup unavailable for kickers ...` when `ctx.position == "K"`.
 After the matchup lines (and after the schedule failure / matchup line in the
 stats-only fallback) come the news lines: `News (most recent first, before
-2026-11-15 18:00 UTC, last 14 days):` then one `- [<doc_id>] 2026-11-13 21:30
-UTC, rotowire: <title>. <summary>` line per item (title only when the summary
-is empty); `No news found in the 14 days before <cutoff>` (`empty`); `News
+2026-11-15 18:00 UTC, last 14 days):`, then three groups in order, `About
+<player name>:`, `<TEAM> team news:`, `Opponent (<OPP>) news:`, each followed
+by one `- [<doc_id>] 2026-11-13 21:30 UTC, rotowire: <title>. <summary>` line
+per item (title only when the summary is empty) or `- none`; `No news found in the 14 days before <cutoff>` (`empty`); `News
 failed to load: <error>` (`error`); `News unavailable: schedule failed to load,
 so no safe cutoff` when not fetched because the schedule isn't `ok`; nothing on
 a target-week BYE.
@@ -320,7 +353,7 @@ prompts and output schemas live in the calling stage modules:
    Its output is untrusted until `resolution/validate.py` checks it.
 2. `answering/generate.py` — **makes the start/sit decision.** Gets the rendered
    context (request, unresolved mentions, per-player name interpretation,
-   roster status, injury report, schedule, matchup, news, and recent stats) and returns the `Answer` envelope.
+   roster status, injury report, schedule, matchup, player/team/opponent news, and recent stats) and returns the `Answer` envelope.
    Model: `config.ANSWER_MODEL`. The system prompt tells it to say plainly when
    a player's data is missing or failed to load rather than fill the gap, that
    a player on bye in the target week cannot score, that a player marked `Out`
@@ -331,7 +364,9 @@ prompts and output schemas live in the calling stage modules:
    the news items as the most current information on availability and role,
    cites each item it relies on by id in `cited_doc_ids` (only ids in the
    context; others are dropped after generation), and flags news that conflicts
-   with the injury report, favoring whichever is more recent.
+   with the injury report, favoring whichever is more recent. Team and opponent
+   news are context (teammate availability, opposing defenders) that shouldn't
+   outweigh the player's own news and production, cited the same way.
 
 ## Data Sources
 
@@ -545,7 +580,7 @@ The **body is authoritative** (current state); the log is provenance.
   that player, before a cutoff, within a lookback window, newest first, top K,
   rendered into the answer context. Recency-only ranking; no index, embeddings,
   or Chroma (the baseline embeddings get compared against later).
-- 2026-11-10 — News tagging happens at retrieval time by name-key matching
+- [superseded] 2026-11-10 — News tagging happens at retrieval time by name-key matching
   (RotoWire: title prefix before `": "` only; other sources: whole words in title
   or summary). No separate index or tagging step.
 - 2026-11-10 — Knobs in `config.py`: `NEWS_TOP_K = 5`, `NEWS_LOOKBACK_DAYS = 14`,
@@ -554,7 +589,7 @@ The **body is authoritative** (current state); the log is provenance.
   kickoff)`. No news on a target-week BYE; no news when the schedule isn't `ok`
   (`error` or `empty`), rendered as "no safe cutoff". `ScheduleWeek` gains
   `kickoff` (ISO 8601 UTC from Eastern `gameday`/`gametime`).
-- 2026-11-10 — Dependency rule: `answering/` may import `ingest.store`'s read
+- [superseded] 2026-11-10 — Dependency rule: `answering/` may import `ingest.store`'s read
   function (`iter_items`) and `ingest.models.NewsItem`; `ingest/` still imports
   nothing from the other stages.
 - 2026-11-10 — Citations: the answer LLM cites news ids in `cited_doc_ids`;
@@ -573,3 +608,24 @@ The **body is authoritative** (current state); the log is provenance.
   cache-read counts) instead of the SDK's `Usage`; the Anthropic implementation
   translates both ways. Extract's debug cache line now prints
   `cache_write_tokens` / `cache_read_tokens`.
+- 2026-11-16 — v1.2: news items are tagged at ingest with the players and teams
+  they mention, and the answer context carries the player's own news plus news
+  about the player's team and the target-week opponent. Supersedes the
+  2026-11-10 retrieval-time tagging entry; player news now comes from tags only.
+- 2026-11-16 — Tagger is a deterministic gazetteer (roster name keys and team
+  name / nickname / unique-city aliases), no LLM. Every rostered position is
+  included, so opposing defenders are tagged. A name clash tags every match.
+- 2026-11-16 — Tags live in a separate, rebuildable `data/news/tags.jsonl`
+  (`NewsTags`: `doc_id`, `player_ids`, `teams`); `items.jsonl` stays raw and
+  append-only. `poll` runs a catch-up after appending; `python -m
+  ffassistant.ingest.index --rebuild` re-tags everything.
+- 2026-11-16 — Team / opponent news is anything tagged with that team,
+  including items about its players (a player tag implies their team).
+- 2026-11-16 — Separate caps per bucket (`NEWS_TOP_K` 5 player,
+  `NEWS_TEAM_TOP_K` 3, `NEWS_OPPONENT_TOP_K` 3); an item appears once, in the
+  first bucket it qualifies for, in priority order player > team > opponent.
+- 2026-11-16 — Dependency rule: `answering/` may import `ingest.store`'s read
+  functions (`iter_items`, `iter_tags`) and `ingest.models.NewsItem` /
+  `NewsTags`. Supersedes the 2026-11-10 dependency entry.
+- 2026-11-16 — Code style: utility modules and their public API get very short
+  docstrings (1 line preferably, 2 at most); still no huge docstrings.

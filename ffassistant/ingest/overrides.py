@@ -12,6 +12,7 @@ ID_KEYS: dict[str, Callable[[str, str | None], str]] = {}
 
 
 def default_id_key(url: str, raw_date: str | None) -> str:
+    """The doc_id key for feeds without an override: the normalized URL alone."""
     return url
 
 

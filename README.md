@@ -20,15 +20,21 @@ The request pipeline has two stages with one handoff type, `ValidatedRequest`:
    → an LLM writes the answer, including the start/sit call.
 
 `answering/` may import `resolution.models` (the handoff type) and the news
-store's read side (`ingest.store.iter_items`, `ingest.models.NewsItem`);
+store's read side (`ingest.store.iter_items` / `iter_tags`,
+`ingest.models.NewsItem` / `NewsTags`);
 `resolution/` never imports from `answering/`.
 
 All code lives in the `ffassistant/` package:
 
-- `ingest/` — stage 0, feeds → stored news items. `poll.py` polls every feed in
-  `config.FEEDS` once and appends new items; `store.py` is the only code that
-  touches `data/news/items.jsonl`; `models.py` has `NewsItem`; `overrides.py` holds
-  per-feed date-parsing and id-key overrides (see CLAUDE.md § Stage 0).
+- `ingest/` — stage 0, feeds → stored, tagged news items. `poll.py` polls every
+  feed in `config.FEEDS` once, appends new items, and tags them; `gazetteer.py`
+  builds the player and team name lookups from the season's roster and team
+  list; `tag.py` tags an item with the players (gsis_ids) and teams it
+  mentions; `index.py` tags untagged items, or re-tags everything with
+  `--rebuild`; `store.py` is the only code that touches `data/news/`
+  (`items.jsonl`, `tags.jsonl`); `models.py` has `NewsItem` and `NewsTags`;
+  `overrides.py` holds per-feed date-parsing and id-key overrides (see
+  CLAUDE.md § Stage 0).
 - `resolution/` — stage 1, prompt → `ValidatedRequest`.
   - `models.py` — `ExtractedRequest` / `ExtractedPlayer` (the LLM's output
     schema), `ValidatedRequest` / `ValidPlayer` / `RejectedMention`, and
@@ -60,10 +66,11 @@ All code lives in the `ffassistant/` package:
     the player's position before the target week; `injuries.py`
     (`InjuryData`) has the player's injury report entry for the target week,
     or whether the team's report isn't out yet; `news.py` (`NewsData`) has the
-    most recent stored news items naming the player, published before a
-    cutoff (now, or the target-week kickoff if that has passed) within a
-    lookback window. Ranking is recency only, matched by name at retrieval
-    time; no index or embeddings yet.
+    most recent stored news tagged with the player, the player's team, and
+    the target-week opponent (three buckets, each item in only one),
+    published before a cutoff (now, or the target-week kickoff if that has
+    passed) within a lookback window. Ranking is recency only; no embeddings
+    yet.
   - `context.py` — `render_context` turns the `ValidatedRequest` and each
     player's `PlayerInputs` into a text context: the request header, a line per
     unresolved mention, then per player an "Interpreted as" line when the
@@ -71,7 +78,8 @@ All code lives in the `ffassistant/` package:
     active (e.g. reserve list), the target week's injury report designation,
     the target week's opponent or bye,
     the opponent's points allowed to the player's position with a league rank,
-    the player's recent news items (each tagged with its `doc_id`),
+    the player's, team's, and opponent's recent news items (each tagged with
+    its `doc_id`),
     and one line per past week merging schedule and stats. Empty and errored
     results render as explicit lines, so no player silently drops out.
   - `generate.py` — `answer(validated)`, the stage entry point: gathers each
@@ -84,7 +92,8 @@ All code lives in the `ffassistant/` package:
   interface with one structured-output call (`generate_structured`), picked by
   `config.LLM_PROVIDER` via `get_llm_client()` and implemented for Anthropic in
   `anthropic_client.py`. Prompts and output schemas live in the stages.
-- `config.py` — the news retrieval knobs (`NEWS_TOP_K`, `NEWS_LOOKBACK_DAYS`,
+- `config.py` — the news retrieval knobs (`NEWS_TOP_K`, `NEWS_TEAM_TOP_K`,
+  `NEWS_OPPONENT_TOP_K`, `NEWS_LOOKBACK_DAYS`,
   `NEWS_MAX_SUMMARY_CHARS`), the dev-time `SEASON` pin (the current week comes from the
   schedule at run time), the
   `DEFAULT_SCORING_FORMAT`, and the `PARSER_MODEL` / `ANSWER_MODEL` choices.
@@ -107,16 +116,24 @@ environment, or an `ant auth login` profile.
 ## Running the news collector
 
 News only appears in answers if the collector has been running: the answer
-stage reads whatever is already in `data/news/items.jsonl` and never fetches
-feeds itself. With no stored items, each player's context just says no news was
-found.
+stage reads whatever is already in `data/news/` and never fetches feeds itself.
+With no stored items, each player's context just says no news was found. Only
+tagged items are retrieved; each poll tags what it adds, and to tag items
+collected before tagging existed (or after changing the tagger), run once:
+
+```
+python -m ffassistant.ingest.index --rebuild
+```
+
+Without `--rebuild`, `index` only tags items that have no tags yet.
 
 ```
 python -m ffassistant.ingest
 ```
 
 Each run polls every feed once, appends new items to `data/news/items.jsonl`
-(gitignored), prints one status line per feed, and exits (non-zero only if every
+(gitignored), prints one status line per feed, tags the new items (printing
+`index: tagged N items`, or `index: error: ...` if the roster couldn't load), and exits (non-zero only if every
 feed failed). It does not loop; schedule it. RotoWire's feed holds only the last
 few updates, so poll often (every 15 minutes or so is safer than hourly).
 

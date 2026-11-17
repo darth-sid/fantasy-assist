@@ -4,36 +4,31 @@ import ffassistant.answering.sources.news as news_module
 import ffassistant.ingest.store as store_module
 from ffassistant.answering.models import ResolvedContext
 from ffassistant.answering.sources.news import news
-from ffassistant.ingest.models import NewsItem
+from ffassistant.ingest.models import NewsItem, NewsTags
 
 CUTOFF = datetime(2026, 11, 15, 18, 0, tzinfo=timezone.utc)
-
-
-def _ctx(name: str = "Terrance Ferguson") -> ResolvedContext:
-    return ResolvedContext(
-        player_id="00-1",
-        player_name=name,
-        team="LA",
-        position="TE",
-        roster_status="ACT",
-        season=2026,
-        week=11,
-        scoring_format="PPR",
-    )
+CTX = ResolvedContext(
+    player_id="00-1",
+    player_name="Terrance Ferguson",
+    team="LA",
+    position="TE",
+    roster_status="ACT",
+    season=2026,
+    week=11,
+    scoring_format="PPR",
+)
 
 
 def _item(
     doc_id: str,
-    title: str,
     summary: str = "",
-    source: str = "rotowire",
     published: datetime = CUTOFF - timedelta(days=1),
 ) -> NewsItem:
     return NewsItem(
         doc_id=doc_id,
         url=f"https://example.com/{doc_id}",
-        source=source,
-        title=title,
+        source="rotowire",
+        title=f"Title {doc_id}",
         summary=summary,
         published_at=published.isoformat(timespec="seconds"),
         fetched_at=published.isoformat(timespec="seconds"),
@@ -41,126 +36,122 @@ def _item(
     )
 
 
-def _ids(monkeypatch, items: list[NewsItem], name: str = "Terrance Ferguson") -> list[str]:
+def _tags(doc_id: str, player_ids: list[str] = (), teams: list[str] = ()) -> NewsTags:
+    return NewsTags(doc_id=doc_id, player_ids=list(player_ids), teams=list(teams))
+
+
+def _run(monkeypatch, items: list[NewsItem], tags: list[NewsTags]):
     monkeypatch.setattr(news_module, "iter_items", lambda: iter(items))
-    result = news(_ctx(name), CUTOFF)
+    monkeypatch.setattr(news_module, "iter_tags", lambda: iter(tags))
+    return news(CTX, "ARI", CUTOFF)
+
+
+def _buckets(result) -> dict[str, list[str]]:
     if result.status == "empty":
-        return []
+        return {}
     assert result.status == "ok"
-    return [entry.doc_id for entry in result.data.items]
+    return {
+        name: [entry.doc_id for entry in getattr(result.data, name)]
+        for name in ("player", "team", "opponent")
+    }
 
 
-def test_rotowire_matches_on_title_prefix(monkeypatch):
-    items = [_item("a", "Terrance Ferguson: Suffers hamstring injury")]
-
-    assert _ids(monkeypatch, items) == ["a"]
-
-
-def test_rotowire_does_not_match_on_summary(monkeypatch):
-    items = [_item("a", "Puka Nacua: Big day", "Ferguson and Terrance Ferguson both caught passes.")]
-
-    assert _ids(monkeypatch, items) == []
-
-
-def test_other_source_matches_whole_words_in_title_or_summary(monkeypatch):
-    items = [
-        _item("title", "Rams sign Terrance Ferguson to extension", source="espn"),
-        _item("summary", "Rams notes", "Coach praised Terrance Ferguson's blocking.", source="espn"),
+def test_each_bucket(monkeypatch):
+    items = [_item("p"), _item("t"), _item("o"), _item("other")]
+    tags = [
+        _tags("p", player_ids=["00-1"], teams=["LA"]),
+        _tags("t", player_ids=["00-2"], teams=["LA"]),
+        _tags("o", teams=["ARI"]),
+        _tags("other", teams=["KC"]),
     ]
 
-    assert _ids(monkeypatch, items) == ["title", "summary"]
+    assert _buckets(_run(monkeypatch, items, tags)) == {
+        "player": ["p"],
+        "team": ["t"],
+        "opponent": ["o"],
+    }
 
 
-def test_other_source_does_not_match_partial_words(monkeypatch):
-    items = [_item("a", "Josh Allensworth signs", "Josh Allensworth is a new name.", source="espn")]
-
-    assert _ids(monkeypatch, items, name="Josh Allen") == []
-
-
-def test_name_key_ignores_periods(monkeypatch):
-    items = [_item("a", "AJ Brown: Limited in practice")]
-
-    assert _ids(monkeypatch, items, name="A.J. Brown") == ["a"]
-
-
-def test_name_key_drops_suffix(monkeypatch):
-    items = [
-        _item("rotowire", "Marvin Harrison: Questionable"),
-        _item("espn", "Notes", "Marvin Harrison Jr. was limited.", source="espn"),
+def test_item_lands_in_first_qualifying_bucket(monkeypatch):
+    items = [_item("player-and-opp"), _item("team-and-opp")]
+    tags = [
+        _tags("player-and-opp", player_ids=["00-1"], teams=["LA", "ARI"]),
+        _tags("team-and-opp", teams=["ARI", "LA"]),
     ]
 
-    assert _ids(monkeypatch, items, name="Marvin Harrison Jr.") == ["rotowire", "espn"]
+    assert _buckets(_run(monkeypatch, items, tags)) == {
+        "player": ["player-and-opp"],
+        "team": ["team-and-opp"],
+        "opponent": [],
+    }
 
 
-def test_name_key_straightens_curly_apostrophes(monkeypatch):
-    items = [_item("a", "Ja’Marr Chase: Practices fully")]
+def test_per_bucket_caps_and_newest_first(monkeypatch):
+    days = [3, 1, 6, 2, 5, 4]
+    items = [
+        _item(f"{kind}-{d}", published=CUTOFF - timedelta(days=d))
+        for kind in ("p", "t", "o")
+        for d in days
+    ]
+    tags = [_tags(f"p-{d}", player_ids=["00-1"]) for d in days]
+    tags += [_tags(f"t-{d}", teams=["LA"]) for d in days]
+    tags += [_tags(f"o-{d}", teams=["ARI"]) for d in days]
 
-    assert _ids(monkeypatch, items, name="Ja'Marr Chase") == ["a"]
+    assert _buckets(_run(monkeypatch, items, tags)) == {
+        "player": ["p-1", "p-2", "p-3", "p-4", "p-5"],
+        "team": ["t-1", "t-2", "t-3"],
+        "opponent": ["o-1", "o-2", "o-3"],
+    }
+
+
+def test_untagged_items_are_skipped(monkeypatch):
+    result = _run(monkeypatch, [_item("untagged")], [])
+
+    assert result.status == "empty"
 
 
 def test_lookback_window_bounds(monkeypatch):
-    title = "Terrance Ferguson: Update"
     items = [
-        _item("at-start", title, published=CUTOFF - timedelta(days=14)),
-        _item("before-start", title, published=CUTOFF - timedelta(days=14, seconds=1)),
-        _item("just-before-cutoff", title, published=CUTOFF - timedelta(seconds=1)),
-        _item("at-cutoff", title, published=CUTOFF),
+        _item("at-start", published=CUTOFF - timedelta(days=14)),
+        _item("before-start", published=CUTOFF - timedelta(days=14, seconds=1)),
+        _item("just-before-cutoff", published=CUTOFF - timedelta(seconds=1)),
+        _item("at-cutoff", published=CUTOFF),
     ]
+    tags = [_tags(item.doc_id, player_ids=["00-1"]) for item in items]
 
-    assert sorted(_ids(monkeypatch, items)) == ["at-start", "just-before-cutoff"]
+    assert _buckets(_run(monkeypatch, items, tags))["player"] == ["just-before-cutoff", "at-start"]
 
 
-def test_newest_first_and_top_k(monkeypatch):
+def test_strips_rotowire_boilerplate_and_truncates(monkeypatch):
     items = [
-        _item(f"day-{days}", "Terrance Ferguson: Update", published=CUTOFF - timedelta(days=days))
-        for days in [3, 1, 6, 2, 5, 4]
+        _item("short", "Ruled out. Visit RotoWire.com for more analysis on this update."),
+        _item("long", "x" * 600, published=CUTOFF - timedelta(days=2)),
     ]
+    tags = [_tags("short", player_ids=["00-1"]), _tags("long", player_ids=["00-1"])]
 
-    assert _ids(monkeypatch, items) == ["day-1", "day-2", "day-3", "day-4", "day-5"]
+    result = _run(monkeypatch, items, tags)
 
-
-def test_strips_rotowire_boilerplate(monkeypatch):
-    summary = "Ferguson was ruled out. Visit RotoWire.com for more analysis on this update."
-    monkeypatch.setattr(
-        news_module, "iter_items", lambda: iter([_item("a", "Terrance Ferguson: Out", summary)])
-    )
-
-    result = news(_ctx(), CUTOFF)
-
-    assert result.data.items[0].summary == "Ferguson was ruled out."
-
-
-def test_truncates_long_summary(monkeypatch):
-    monkeypatch.setattr(
-        news_module, "iter_items", lambda: iter([_item("a", "Terrance Ferguson: Out", "x" * 600)])
-    )
-
-    result = news(_ctx(), CUTOFF)
-
-    assert result.data.items[0].summary == "x" * 500 + "..."
+    assert [entry.summary for entry in result.data.player] == ["Ruled out.", "x" * 500 + "..."]
 
 
 def test_ok_carries_cutoff_and_entry_fields(monkeypatch):
-    monkeypatch.setattr(
-        news_module, "iter_items", lambda: iter([_item("a", "Terrance Ferguson: Out", "Ruled out.")])
-    )
-
-    result = news(_ctx(), CUTOFF)
+    result = _run(monkeypatch, [_item("a", "Ruled out.")], [_tags("a", player_ids=["00-1"])])
 
     assert result.data.cutoff == "2026-11-15T18:00:00+00:00"
-    entry = result.data.items[0]
-    assert (entry.source, entry.title, entry.url) == (
+    entry = result.data.player[0]
+    assert (entry.source, entry.title, entry.url, entry.published_at) == (
         "rotowire",
-        "Terrance Ferguson: Out",
+        "Title a",
         "https://example.com/a",
+        "2026-11-14T18:00:00+00:00",
     )
-    assert entry.published_at == "2026-11-14T18:00:00+00:00"
 
 
-def test_missing_items_file_is_empty(monkeypatch, tmp_path):
+def test_missing_files_are_empty(monkeypatch, tmp_path):
     monkeypatch.setattr(store_module, "ITEMS_PATH", tmp_path / "missing.jsonl")
+    monkeypatch.setattr(store_module, "TAGS_PATH", tmp_path / "missing-tags.jsonl")
 
-    result = news(_ctx(), CUTOFF)
+    result = news(CTX, "ARI", CUTOFF)
 
     assert result.status == "empty"
     assert result.source == "news"
@@ -170,9 +161,9 @@ def test_error_status_when_read_raises(monkeypatch):
     def _raise():
         raise OSError("disk gone")
 
-    monkeypatch.setattr(news_module, "iter_items", _raise)
+    monkeypatch.setattr(news_module, "iter_tags", _raise)
 
-    result = news(_ctx(), CUTOFF)
+    result = news(CTX, "ARI", CUTOFF)
 
     assert result.status == "error"
     assert result.data is None

@@ -37,6 +37,7 @@ def load_fantasy_roster(season: int) -> dict[str, RosterPlayer]:
 
 
 def render_roster(roster: dict[str, RosterPlayer]) -> str:
+    """Renders the roster as a header plus one pipe-separated line per player."""
     lines = ["gsis_id | full_name | team | position | status"]
     lines.extend(
         f"{p.gsis_id} | {p.full_name} | {p.team} | {p.position} | {p.status}"

@@ -48,7 +48,9 @@ never import `nflreadpy` directly.
   `resolution/roster.py` (the fantasy roster the extraction LLM resolves against,
   and the `gsis_id` lookup validation checks) and by `answering/player_context.py`
   (team as of the target week). Columns relied on: `full_name`, `gsis_id`, `team`,
-  `week`, `position`, `status`. Loaded up to three times per run (extract,
+  `week`, `position`, `status`. Also loaded at ingest by `ingest/gazetteer.py`
+  for every position (OL, defense, etc. included; ~3,000 rows for 2026, one
+  null `gsis_id`), latest-week row per player, to tag news. Loaded up to three times per run (extract,
   validate, player context); the in-memory cache absorbs the repeats. See gotchas
   below — this is not a simple one-row-per-player table.
 - `load_schedules(seasons)` — used by `answering/sources/schedule.py` via
@@ -60,6 +62,15 @@ never import `nflreadpy` directly.
   Eastern local time**, not UTC; convert with `America/New_York` so daylight
   saving is handled. `gametime` can be null (treated as midnight Eastern on
   `gameday`).
+- `load_teams()` — used by `ingest/gazetteer.py` via
+  `clients.nflreadpy_client.load_teams` (takes no season). 36 rows, not 32: it
+  also lists relocated franchises (`OAK` Oakland Raiders, `SD` San Diego
+  Chargers, `STL` St. Louis Rams) and a second Rams row (`LAR`) alongside `LA`,
+  so the gazetteer keeps only abbreviations present in the season's
+  `load_rosters` (which uses `LA` for the Rams). Columns relied on:
+  `team_abbr`, `team_name` (`Arizona Cardinals`), `team_nick` (`Cardinals`);
+  the city is derived as `team_name` minus `team_nick`, and two cities are
+  shared (`New York`, `Los Angeles`).
 - `load_injuries(seasons)` — used by `answering/sources/injuries.py` via
   `clients.nflreadpy_client.load_injuries` (single season). One row per
   `(gsis_id, week)`, REG only (weeks 1 to 7 for 2026 as of 2026-10-24). Filtered

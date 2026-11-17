@@ -10,6 +10,8 @@ FEEDS = {
 }
 NEWS_DIR = "data/news"  # relative to the repo root
 
-NEWS_TOP_K = 5
+NEWS_TOP_K = 5  # player's own news
+NEWS_TEAM_TOP_K = 3
+NEWS_OPPONENT_TOP_K = 3
 NEWS_LOOKBACK_DAYS = 14
 NEWS_MAX_SUMMARY_CHARS = 500
