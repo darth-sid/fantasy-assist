@@ -486,7 +486,7 @@ def test_known_roster_status_line_follows_interpreted_line():
     header = lines.index("## Davante Adams (LA)")
     assert lines[header + 1] == 'Interpreted "Davante" as Davante Adams (LA WR)'
     assert lines[header + 2] == "Roster status: RES (reserve list, not available to play)"
-    assert lines[header + 3] == "Not on the Week 7 injury report"
+    assert lines[header + 3] == "Week 7: vs IND"
 
 
 def test_unknown_roster_status_code():
@@ -557,6 +557,22 @@ def test_no_injury_line_on_bye():
     lines = _player_lines(_inputs(_ctx("CeeDee Lamb", "DAL"), _ok_result(), sched, injuries=empty))
 
     assert not any("injury report" in line.lower() for line in lines)
+
+
+def test_no_injury_line_when_roster_status_is_unavailable():
+    for status in ("RES", "PUP"):
+        ctx = _ctx("Davante Adams", "LA", roster_status=status)
+
+        lines = _player_lines(_inputs(ctx, _ok_result()))
+
+        assert any(line.startswith(f"Roster status: {status}") for line in lines)
+        assert not any("injury report" in line.lower() for line in lines)
+
+
+def test_injury_line_kept_for_other_non_active_statuses():
+    lines = _player_lines(_inputs(_ctx("CeeDee Lamb", "DAL", roster_status="INA"), _ok_result()))
+
+    assert "Not on the Week 7 injury report" in lines
 
 
 def _past_week_lines(*replacements: ScheduleWeek, stats=None) -> list[str]:

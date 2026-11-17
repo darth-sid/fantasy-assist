@@ -24,6 +24,8 @@ _ROSTER_STATUS_MEANINGS = {
     "DEV": "practice squad",
     "RET": "retired",
 }
+# Reserve-list players drop off the injury report, so "not on the report" would read as healthy.
+_UNAVAILABLE_STATUSES = {"RES", "PUP"}
 _CURLY_QUOTES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
 
 
@@ -74,6 +76,8 @@ def _injury_lines(
     injuries: SourceResult[InjuryData],
     sched: SourceResult[ScheduleData],
 ) -> list[str]:
+    if ctx.roster_status in _UNAVAILABLE_STATUSES:
+        return []
     if sched.status == "ok" and any(
         week.week == ctx.week and week.opponent is None for week in sched.data.weeks
     ):

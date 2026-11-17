@@ -319,7 +319,9 @@ differs from the normalized full name, the header is followed by
 available to play)` (known codes: `RES` reserve list, not available to play;
 `INA` inactive; `PUP` physically unable to perform list, not available to
 play; `CUT` released; `DEV` practice squad; `RET` retired; anything else is
-`(unrecognized status code)`). Then the injury line, skipped when the target
+`(unrecognized status code)`). Then the injury line, skipped when the roster
+status is `RES` or `PUP` (reserve players drop off the report, so "not on the
+report" would read as healthy) and when the target
 week is a BYE: `Injury report (Week 7): Questionable (Groin). Practice:
 Limited Participation in Practice`, `Injury report (Week 7): no game
 designation. Practice: ...` (listed, no designation), `Not on the Week 7
@@ -677,3 +679,7 @@ The **body is authoritative** (current state); the log is provenance.
 - 2026-11-17 — The player's own bucket stays recency-only.
 - 2026-11-17 — `DEBUG=true` prints a `--- News ranking ---` block per player
   (ranker, filled-in query, each selected item's score, date, title).
+- 2026-11-17 — The injury line is skipped for `RES` and `PUP` roster statuses:
+  the roster status line already says the player is unavailable, and reserve
+  players drop off the report, so "Not on the Week N injury report" read as
+  healthy. Other non-ACT statuses keep the injury line.

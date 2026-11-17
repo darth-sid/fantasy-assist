@@ -149,13 +149,14 @@ Each run polls every feed once, appends new items to `data/news/items.jsonl`
 feed failed). It does not loop; schedule it. RotoWire's feed holds only the last
 few updates, so poll often (every 15 minutes or so is safer than hourly).
 
-Hourly with cron (`crontab -e`):
+Every 15 minutes with cron (`crontab -e`):
 
 ```
-0 * * * * cd /Users/sid/code/personal/projects/WIP/FFassistant && /Users/sid/code/personal/projects/WIP/FFassistant/.venv/bin/python -m ffassistant.ingest >> /Users/sid/code/personal/projects/WIP/FFassistant/data/ingest.log 2>&1
+*/15 * * * * cd /Users/sid/code/personal/projects/WIP/FFassistant && /Users/sid/code/personal/projects/WIP/FFassistant/.venv/bin/python -m ffassistant.ingest >> /Users/sid/code/personal/projects/WIP/FFassistant/data/ingest.log 2>&1
 ```
 
-Hourly with launchd, saved as `~/Library/LaunchAgents/com.ffassistant.ingest.plist`
+Every 15 minutes with launchd (which also catches up on a run missed while the
+Mac slept), saved as `~/Library/LaunchAgents/com.ffassistant.ingest.plist`
 and loaded with `launchctl load ~/Library/LaunchAgents/com.ffassistant.ingest.plist`:
 
 ```xml
@@ -174,7 +175,9 @@ and loaded with `launchctl load ~/Library/LaunchAgents/com.ffassistant.ingest.pl
   <key>WorkingDirectory</key>
   <string>/Users/sid/code/personal/projects/WIP/FFassistant</string>
   <key>StartInterval</key>
-  <integer>3600</integer>
+  <integer>900</integer>
+  <key>RunAtLoad</key>
+  <true/>
   <key>StandardOutPath</key>
   <string>/Users/sid/code/personal/projects/WIP/FFassistant/data/ingest.log</string>
   <key>StandardErrorPath</key>
