@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from ffassistant.answering.models import ResolvedContext, SourceResult
-from ffassistant.answering.ranking import RANKERS, RankDoc
+from ffassistant.answering.ranking import RANKERS, RankDoc, Ranker
 from ffassistant.config import (
     NEWS_LOOKBACK_DAYS,
     NEWS_MAX_SUMMARY_CHARS,
@@ -76,11 +76,11 @@ def _published(item: NewsItem) -> datetime:
 
 
 def _rank_bucket(
-    query: str, candidates: list[NewsItem], corpus: list[RankDoc], top_k: int
+    ranker: Ranker, query: str, candidates: list[NewsItem], top_k: int
 ) -> list[NewsEntry]:
     by_id = {item.doc_id: item for item in candidates}
-    candidate_docs = [doc for doc in corpus if doc.doc_id in by_id]
-    ranked = RANKERS[NEWS_RANKER](query, candidate_docs, corpus)[:top_k]
+    candidate_docs = [doc for doc in ranker.corpus if doc.doc_id in by_id]
+    ranked = ranker.rank(query, candidate_docs)[:top_k]
     selected = [_entry(by_id[doc.doc_id], score) for doc, score in ranked]
     return sorted(selected, key=lambda entry: entry.published_at, reverse=True)
 
@@ -120,6 +120,7 @@ def news(ctx: ResolvedContext, opponent: str, cutoff: datetime) -> SourceResult[
             RankDoc(item.doc_id, f"{item.title} {_clean_summary(item.summary)}", _published(item))
             for item, _ in in_window
         ]
+        ranker = RANKERS[NEWS_RANKER](corpus)
 
         return SourceResult(
             source=source,
@@ -129,12 +130,12 @@ def news(ctx: ResolvedContext, opponent: str, cutoff: datetime) -> SourceResult[
                 cutoff=as_of,
                 player=[_entry(item) for item in buckets["player"][:NEWS_TOP_K]],
                 team=_rank_bucket(
-                    news_query(ctx, opponent, "team"), buckets["team"], corpus, NEWS_TEAM_TOP_K
+                    ranker, news_query(ctx, opponent, "team"), buckets["team"], NEWS_TEAM_TOP_K
                 ),
                 opponent=_rank_bucket(
+                    ranker,
                     news_query(ctx, opponent, "opponent"),
                     buckets["opponent"],
-                    corpus,
                     NEWS_OPPONENT_TOP_K,
                 ),
             ),

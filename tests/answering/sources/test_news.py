@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import ffassistant.answering.sources.news as news_module
 import ffassistant.ingest.store as store_module
 from ffassistant.answering.models import ResolvedContext
+from ffassistant.answering.ranking import BM25Ranker
 from ffassistant.answering.sources.news import news
 from ffassistant.ingest.models import NewsItem, NewsTags
 
@@ -269,3 +270,30 @@ def test_news_query_fills_placeholders():
     query = news_module.news_query(CTX, "ARI", "team")
 
     assert query.startswith("tight end role workload")
+
+
+def test_bm25_matches_stemmed_forms(monkeypatch):
+    monkeypatch.setattr(news_module, "NEWS_QUERY_TEAM", "injury")
+    items = [_item("plural", title="Rams battling injuries")]
+
+    result = _run(monkeypatch, items, [_tags("plural", teams=["LA"])], ranker="bm25")
+
+    assert _team_ids(result) == ["plural"]
+
+
+def test_bm25_index_is_built_once_per_call(monkeypatch):
+    built = []
+
+    class CountingBM25(BM25Ranker):
+        def __init__(self, corpus):
+            built.append(corpus)
+            super().__init__(corpus)
+
+    monkeypatch.setitem(news_module.RANKERS, "bm25", CountingBM25)
+    items = [_item("t", title="Rams cornerback injury"), _item("o", title="Cardinals injury")]
+    tags = [_tags("t", teams=["LA"]), _tags("o", teams=["ARI"])]
+
+    result = _bm25(monkeypatch, items, tags)
+
+    assert len(built) == 1
+    assert (_team_ids(result), [e.doc_id for e in result.data.opponent]) == (["t"], ["o"])

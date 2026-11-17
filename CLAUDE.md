@@ -58,7 +58,7 @@ TokenUsage`). `get_llm_client()` returns the implementation named by
 stages do `client = get_llm_client()` then `client.generate_structured(...)`,
 and tests monkeypatch
 `get_llm_client`. `clients/anthropic_client.py`'s `AnthropicClient` is raw SDK
-access only (`messages.parse()`, `temperature=0`): it turns `SystemBlock`s into
+access only (`messages.parse()`, no sampling parameters): it turns `SystemBlock`s into
 text blocks (`cache=True` -> `cache_control` ephemeral) and the SDK usage into
 `TokenUsage`. Prompts and Pydantic output schemas live in the stage modules that
 use them. Nothing else imports either library.
@@ -84,7 +84,7 @@ highest score first; `news: not fetched` / `news: <status>` otherwise), then
 the rendered context it already built, before the LLM call.
 
 `config.py` pins `SEASON = 2026`, `DEFAULT_SCORING_FORMAT = "PPR"`, and the
-models `PARSER_MODEL` / `ANSWER_MODEL` (both `"claude-haiku-4-5"`), and the
+models `PARSER_MODEL` / `ANSWER_MODEL` (both `"claude-haiku-5-5"`), and the
 news retrieval knobs `NEWS_TOP_K = 5` (player bucket), `NEWS_TEAM_TOP_K = 3`,
 `NEWS_OPPONENT_TOP_K = 3`, `NEWS_LOOKBACK_DAYS = 14`,
 `NEWS_MAX_SUMMARY_CHARS = 500`, and the team/opponent ranking settings:
@@ -300,14 +300,19 @@ the `SourceResult` envelope (`source`, `status`, `as_of`, `data`, `error`).
   `status="empty"` only when all three buckets are empty (including missing
   files); `as_of` is the cutoff. Out of scope: the RotoWire id crosswalk.
 
-`answering/ranking.py`: rankers share one signature, `(query, candidates,
-corpus) -> list[(RankDoc, score)]` in rank order (`RankDoc`: `doc_id`, `text`,
-`published_at`), registered in `RANKERS`. Ties go to the newer document.
-`rank_recency`: score = publish timestamp, query and corpus ignored. `rank_bm25`
-(`bm25s`, default lucene BM25, its English stopwords, no stemmer): the index is
-built over the whole corpus, i.e. every tagged item in the lookback window
-across all teams, so term weights come from a larger sample than one bucket;
-scores are then read for the bucket's candidates, and zero scores are dropped.
+`answering/ranking.py`: the `Ranker` ABC is constructed once over a corpus
+(`Ranker(corpus)`, any index built in `__init__`) and has one method,
+`rank(query, candidates) -> list[(RankDoc, score)]` in rank order (`RankDoc`:
+`doc_id`, `text`, `published_at`). `RANKERS` maps the `NEWS_RANKER` name to the
+class. `news` constructs one ranker per call and uses it for both the team and
+the opponent query, so the index is never rebuilt between queries. Ties go to
+the newer document. `RecencyRanker`: score = publish timestamp, query and
+corpus ignored. `BM25Ranker` (`bm25s`, default lucene BM25, its English
+stopwords, the PyStemmer English stemmer on both documents and queries): the
+index is built over the whole corpus, i.e. every tagged item in the lookback
+window across all teams, so term weights come from a larger sample than one
+bucket; scores are then read for the bucket's candidates, and zero scores are
+dropped.
 Document text is `title + " " + cleaned summary`.
 
 `answering/context.py`: `render_context(validated, players)` renders the raw
@@ -373,8 +378,8 @@ Working mode: **Build** — Sid designs, Claude implements to spec.
 
 Two LLM touch points, both via `client = get_llm_client()` then
 `client.generate_structured(...)`
-(`clients/llm_client.py`; the Anthropic implementation uses `temperature=0`,
-`messages.parse()` + a Pydantic model). The
+(`clients/llm_client.py`; the Anthropic implementation uses
+`messages.parse()` + a Pydantic model, with no `temperature`). The
 prompts and output schemas live in the calling stage modules:
 1. `resolution/extract.py` — turns the raw natural-language prompt into an
    `ExtractedRequest` (player mentions **resolved to `gsis_id`s** against the
@@ -686,3 +691,16 @@ The **body is authoritative** (current state); the log is provenance.
   healthy. Other non-ACT statuses keep the injury line.
 - 2026-11-17 — Each ingest run starts its output with `[<fetched_at>]` (ISO
   8601 UTC) so `data/ingest.log` shows when each run happened.
+- 2026-11-17 — BM25 now stems documents and queries with PyStemmer's English
+  stemmer (`PyStemmer==3.1.0`), so `injury` matches `injuries`. Supersedes the
+  "no stemmer" part of the 2026-11-17 BM25 entry.
+- [superseded] 2026-11-17 — Rankers are index-once: `RANKERS[name](corpus)` returns a scorer
+  that takes `(query, candidates)`, so `news` builds the BM25 index once and
+  scores both the team and opponent queries against it.
+- 2026-11-17 — Rankers are a `Ranker` ABC (`RecencyRanker`, `BM25Ranker`)
+  constructed over the corpus with a `rank(query, candidates)` method, instead
+  of a function returning a scorer closure; `RANKERS` maps names to classes.
+  Supersedes the scorer-callable entry; the index is still built once per call.
+- 2026-11-17 — `AnthropicClient` no longer sends `temperature=0`: Claude Haiku
+  5.5 (now `PARSER_MODEL` / `ANSWER_MODEL`) rejects it with a 400, and newer
+  API versions reject sampling parameters on every model.
