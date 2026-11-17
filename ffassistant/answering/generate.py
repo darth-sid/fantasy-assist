@@ -9,11 +9,11 @@ from ffassistant.answering.models import Answer, Citation, PlayerInputs, SourceR
 from ffassistant.answering.player_context import player_context
 from ffassistant.answering.sources.defense import defense
 from ffassistant.answering.sources.injuries import injuries
-from ffassistant.answering.sources.news import news
+from ffassistant.answering.sources.news import NewsEntry, news, news_query
 from ffassistant.answering.sources.recent_stats import recent_stats
 from ffassistant.answering.sources.schedule import ScheduleData, ScheduleWeek, schedule
 from ffassistant.clients.llm_client import SystemBlock, get_llm_client
-from ffassistant.config import ANSWER_MODEL
+from ffassistant.config import ANSWER_MODEL, NEWS_RANKER
 from ffassistant.resolution.models import ValidatedRequest
 
 _SYSTEM_PROMPT = """Answer the user's fantasy football question using only the provided context.
@@ -100,12 +100,40 @@ def _citations(cited_doc_ids: list[str], players: list[PlayerInputs]) -> list[Ci
     ]
 
 
+def _ranking_lines(label: str, query: str, entries: list[NewsEntry]) -> list[str]:
+    lines = [f"{label} ({NEWS_RANKER}): {query}"]
+    for entry in sorted(entries, key=lambda e: e.score, reverse=True):
+        lines.append(f"  {entry.score:.2f}  {entry.published_at[:10]}  {entry.title}")
+    if not entries:
+        lines.append("  (none selected)")
+    return lines
+
+
+def _print_news_ranking(players: list[PlayerInputs]) -> None:
+    print("--- News ranking ---")
+    for inputs in players:
+        ctx, result = inputs.ctx, inputs.news
+        print(f"## {ctx.player_name} ({ctx.team})")
+        if result is None or result.status != "ok":
+            print(f"news: {'not fetched' if result is None else result.status}")
+            continue
+        opponent = _target_week(inputs.schedule, ctx.week).opponent
+        team_query = news_query(ctx, opponent, "team")
+        opponent_query = news_query(ctx, opponent, "opponent")
+        lines = _ranking_lines(f"{ctx.team} team news", team_query, result.data.team)
+        lines += _ranking_lines(f"Opponent ({opponent}) news", opponent_query, result.data.opponent)
+        print("\n".join(lines))
+    print("--------------------")
+    print()
+
+
 def answer(
     validated: ValidatedRequest, debug: bool = False, now: datetime | None = None
 ) -> Answer:
     players = gather_inputs(validated, now)
     context = render_context(validated, players)
     if debug:
+        _print_news_ranking(players)
         print("--- Answer context ---")
         print(context)
         print("----------------------")

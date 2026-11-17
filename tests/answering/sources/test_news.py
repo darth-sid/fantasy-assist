@@ -23,12 +23,13 @@ def _item(
     doc_id: str,
     summary: str = "",
     published: datetime = CUTOFF - timedelta(days=1),
+    title: str | None = None,
 ) -> NewsItem:
     return NewsItem(
         doc_id=doc_id,
         url=f"https://example.com/{doc_id}",
         source="rotowire",
-        title=f"Title {doc_id}",
+        title=title or f"Title {doc_id}",
         summary=summary,
         published_at=published.isoformat(timespec="seconds"),
         fetched_at=published.isoformat(timespec="seconds"),
@@ -40,7 +41,8 @@ def _tags(doc_id: str, player_ids: list[str] = (), teams: list[str] = ()) -> New
     return NewsTags(doc_id=doc_id, player_ids=list(player_ids), teams=list(teams))
 
 
-def _run(monkeypatch, items: list[NewsItem], tags: list[NewsTags]):
+def _run(monkeypatch, items: list[NewsItem], tags: list[NewsTags], ranker: str = "recency"):
+    monkeypatch.setattr(news_module, "NEWS_RANKER", ranker)
     monkeypatch.setattr(news_module, "iter_items", lambda: iter(items))
     monkeypatch.setattr(news_module, "iter_tags", lambda: iter(tags))
     return news(CTX, "ARI", CUTOFF)
@@ -168,3 +170,102 @@ def test_error_status_when_read_raises(monkeypatch):
     assert result.status == "error"
     assert result.data is None
     assert "disk gone" in result.error
+
+
+def _bm25(monkeypatch, items: list[NewsItem], tags: list[NewsTags]):
+    monkeypatch.setattr(news_module, "NEWS_QUERY_TEAM", "cornerback injury")
+    return _run(monkeypatch, items, tags, ranker="bm25")
+
+
+def _team_ids(result) -> list[str]:
+    return [entry.doc_id for entry in result.data.team]
+
+
+def test_recency_ranker_scores_are_timestamps(monkeypatch):
+    result = _run(monkeypatch, [_item("t")], [_tags("t", teams=["LA"])])
+
+    assert result.data.team[0].score == (CUTOFF - timedelta(days=1)).timestamp()
+
+
+def test_bm25_orders_relevant_item_above_irrelevant(monkeypatch):
+    monkeypatch.setattr(news_module, "NEWS_TEAM_TOP_K", 1)
+    items = [
+        _item("uniforms", title="Rams unveil throwback uniforms", published=CUTOFF - timedelta(hours=1)),
+        _item("cb", title="Rams cornerback ruled out with injury", published=CUTOFF - timedelta(days=3)),
+        _item("ticket", title="Rams ticket injury waiver", published=CUTOFF - timedelta(days=2)),
+    ]
+    tags = [_tags(i.doc_id, teams=["LA"]) for i in items]
+
+    assert _team_ids(_bm25(monkeypatch, items, tags)) == ["cb"]
+
+
+def test_bm25_drops_zero_score_items(monkeypatch):
+    items = [
+        _item("cb", title="Rams cornerback ruled out"),
+        _item("uniforms", title="Rams unveil throwback uniforms"),
+    ]
+    tags = [_tags(i.doc_id, teams=["LA"]) for i in items]
+
+    assert _team_ids(_bm25(monkeypatch, items, tags)) == ["cb"]
+
+
+def test_bm25_ties_go_to_the_newer_item(monkeypatch):
+    monkeypatch.setattr(news_module, "NEWS_TEAM_TOP_K", 1)
+    items = [
+        _item("old", title="Rams cornerback hurt", published=CUTOFF - timedelta(days=3)),
+        _item("new", title="Rams cornerback hurt", published=CUTOFF - timedelta(days=1)),
+    ]
+    tags = [_tags(i.doc_id, teams=["LA"]) for i in items]
+
+    assert _team_ids(_bm25(monkeypatch, items, tags)) == ["new"]
+
+
+def test_bm25_term_weights_come_from_the_whole_window(monkeypatch):
+    monkeypatch.setattr(news_module, "NEWS_QUERY_TEAM", "injury")
+    items = [
+        _item("cb", title="Rams cornerback injury update"),
+        _item("other", title="Rams practice notes"),
+    ]
+    tags = [_tags(i.doc_id, teams=["LA"]) for i in items]
+    alone = _run(monkeypatch, items, tags, ranker="bm25").data.team[0].score
+
+    # An item outside the bucket (a KC item) that also says "injury" lowers that term's weight.
+    outside = _item("kc", title="Chiefs injury report")
+    with_outside = _run(
+        monkeypatch, [*items, outside], [*tags, _tags("kc", teams=["KC"])], ranker="bm25"
+    )
+
+    assert _team_ids(with_outside) == ["cb"]
+    assert with_outside.data.team[0].score < alone
+
+
+def test_player_bucket_ignores_ranker(monkeypatch):
+    items = [
+        _item("p-irrelevant", title="Ferguson unveils new cleats", published=CUTOFF - timedelta(days=1)),
+        _item("p-injury", title="Ferguson cornerback injury", published=CUTOFF - timedelta(days=2)),
+    ]
+    tags = [_tags(i.doc_id, player_ids=["00-1"]) for i in items]
+
+    result = _bm25(monkeypatch, items, tags)
+
+    assert [entry.doc_id for entry in result.data.player] == ["p-irrelevant", "p-injury"]
+    assert all(entry.score is None for entry in result.data.player)
+
+
+def test_selected_items_render_newest_first(monkeypatch):
+    items = [
+        _item("strong-old", title="Rams cornerback injury cornerback", published=CUTOFF - timedelta(days=5)),
+        _item("weak-new", title="Rams cornerback signs", published=CUTOFF - timedelta(days=1)),
+    ]
+    tags = [_tags(i.doc_id, teams=["LA"]) for i in items]
+
+    result = _bm25(monkeypatch, items, tags)
+
+    assert _team_ids(result) == ["weak-new", "strong-old"]
+    assert result.data.team[1].score > result.data.team[0].score
+
+
+def test_news_query_fills_placeholders():
+    query = news_module.news_query(CTX, "ARI", "team")
+
+    assert query.startswith("tight end role workload")

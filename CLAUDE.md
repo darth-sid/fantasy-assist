@@ -77,14 +77,21 @@ there are none). The `DEBUG` env var (`true`, shell or `.env`) turns on debug
 output in order: `extract` prints the `ExtractedRequest` (each mention with
 its `player_id` or null, week, scoring format) and the extract call's
 `cache_write_tokens` / `cache_read_tokens`; `__main__` prints
-validation's `rejected` list; `answer(validated, debug=...)` prints the
-rendered context it already built before the LLM call.
+validation's `rejected` list; `answer(validated, debug=...)` prints a `---
+News ranking ---` block (per player, for the team and opponent buckets: the
+ranker, the filled-in query, and each selected item's score, date, and title,
+highest score first; `news: not fetched` / `news: <status>` otherwise), then
+the rendered context it already built, before the LLM call.
 
 `config.py` pins `SEASON = 2026`, `DEFAULT_SCORING_FORMAT = "PPR"`, and the
 models `PARSER_MODEL` / `ANSWER_MODEL` (both `"claude-haiku-4-5"`), and the
 news retrieval knobs `NEWS_TOP_K = 5` (player bucket), `NEWS_TEAM_TOP_K = 3`,
 `NEWS_OPPONENT_TOP_K = 3`, `NEWS_LOOKBACK_DAYS = 14`,
-`NEWS_MAX_SUMMARY_CHARS = 500`. There is no current-week pin; the current week
+`NEWS_MAX_SUMMARY_CHARS = 500`, and the team/opponent ranking settings:
+`NEWS_RANKER = "bm25"` (or `"recency"`), the query templates `NEWS_QUERY_TEAM`
+/ `NEWS_QUERY_OPPONENT` (placeholders `{player}`, `{position_words}`, `{team}`,
+`{opponent}`), and `NEWS_POSITION_WORDS` (QB/RB/WR/TE/K -> words for
+`{position_words}`). There is no current-week pin; the current week
 comes from the schedule at run time.
 
 ### Stage 0: ingest
@@ -274,19 +281,33 @@ the `SourceResult` envelope (`source`, `status`, `as_of`, `data`, `error`).
   report, which is why roster status is shown too.
 - `news.py` (`NewsData`: `cutoff`, `player`, `team`, `opponent`, each a
   `list[NewsEntry]`; `NewsEntry`: `doc_id`, `source`, `published_at`, `title`,
-  `summary`, `url`): `news(ctx, opponent, cutoff)`, the one source that takes
-  extra arguments (the target-week opponent and the cutoff). Recency-only
-  retrieval over the ingest-time tags (the baseline embeddings get compared
-  against later). Joins `iter_items()` with `iter_tags()` on `doc_id` (items
+  `summary`, `url`, `score` (the ranker's score, None for the player bucket;
+  never rendered into the context)): `news(ctx, opponent, cutoff)`, the one
+  source that takes extra arguments (the target-week opponent and the cutoff).
+  Retrieval over the ingest-time tags; team scoping is the only filter. Joins `iter_items()` with `iter_tags()` on `doc_id` (items
   with no tags row are skipped) and keeps items with `cutoff -
   NEWS_LOOKBACK_DAYS <= published_at < cutoff`, newest first. Each item lands in
   the first bucket it qualifies for: player (`ctx.player_id` in `player_ids`),
   then team (`ctx.team` in `teams`), then opponent (`opponent` in `teams`).
-  Caps are `NEWS_TOP_K` / `NEWS_TEAM_TOP_K` / `NEWS_OPPONENT_TOP_K`. Summaries
+  The player bucket is always newest first, capped at `NEWS_TOP_K` (the newest
+  update about the player is what matters). The team and opponent buckets are
+  ranked by `config.NEWS_RANKER` against their query template (`news_query(ctx,
+  opponent, bucket)`), capped at `NEWS_TEAM_TOP_K` / `NEWS_OPPONENT_TOP_K`,
+  then rendered newest first. Summaries
   have RotoWire's trailing `Visit RotoWire.com for more analysis on this
   update.` stripped, then are truncated to `NEWS_MAX_SUMMARY_CHARS` plus `...`.
   `status="empty"` only when all three buckets are empty (including missing
   files); `as_of` is the cutoff. Out of scope: the RotoWire id crosswalk.
+
+`answering/ranking.py`: rankers share one signature, `(query, candidates,
+corpus) -> list[(RankDoc, score)]` in rank order (`RankDoc`: `doc_id`, `text`,
+`published_at`), registered in `RANKERS`. Ties go to the newer document.
+`rank_recency`: score = publish timestamp, query and corpus ignored. `rank_bm25`
+(`bm25s`, default lucene BM25, its English stopwords, no stemmer): the index is
+built over the whole corpus, i.e. every tagged item in the lookback window
+across all teams, so term weights come from a larger sample than one bucket;
+scores are then read for the bucket's candidates, and zero scores are dropped.
+Document text is `title + " " + cleaned summary`.
 
 `answering/context.py`: `render_context(validated, players)` renders the raw
 prompt, week, and scoring format, then one `Could not resolve "<mention>":
@@ -642,3 +663,17 @@ The **body is authoritative** (current state); the log is provenance.
   RotoWire, summary team names are used only for this tie-break, never as tags.
   Refines the 2026-11-16 "a name clash tags every match" rule, which is now the
   fallback.
+- 2026-11-17 — v1.3: the team and opponent buckets are ranked by BM25
+  relevance to a per-bucket query template instead of pure recency, behind
+  `config.NEWS_RANKER` (`"bm25"` default, `"recency"` kept for comparison).
+  Finding: newest-K let low-relevance items crowd out important ones.
+- 2026-11-17 — Team scoping is the only filter; relevance within a bucket
+  comes from the query templates (`NEWS_QUERY_TEAM`, `NEWS_QUERY_OPPONENT`,
+  `NEWS_POSITION_WORDS`), not position rules.
+- 2026-11-17 — BM25 before dense retrieval. `bm25s==0.3.16` with its English
+  stopwords and no stemmer. Index over every tagged item in the window (all
+  teams); zero scores dropped; ties go to the newer item; the selected items
+  render newest first. `NewsEntry` gains `score`, not rendered.
+- 2026-11-17 — The player's own bucket stays recency-only.
+- 2026-11-17 — `DEBUG=true` prints a `--- News ranking ---` block per player
+  (ranker, filled-in query, each selected item's score, date, title).

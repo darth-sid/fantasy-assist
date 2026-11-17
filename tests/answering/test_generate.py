@@ -193,3 +193,57 @@ def test_answer_runs_sources_and_returns_generated_output(monkeypatch):
     )
     assert result == Answer(answer="Start **Lamb**.", citations=[])
     assert seen["context"] == generate_module.render_context(_validated(), [inputs])
+
+
+def test_debug_prints_news_ranking_block(monkeypatch, capsys):
+    _stub_sources(monkeypatch, _schedule("2026-10-25T17:00:00+00:00"), [])
+
+    def entry(doc_id: str, score: float, day: int) -> NewsEntry:
+        return NewsEntry(
+            doc_id=doc_id,
+            source="espn",
+            published_at=f"2026-10-{day:02d}T15:00:00+00:00",
+            title=f"Title {doc_id}",
+            summary="",
+            url=f"https://example.com/{doc_id}",
+            score=score,
+        )
+
+    data = NewsData(
+        cutoff=NOW.isoformat(),
+        player=[],
+        team=[entry("newer-low", 1.5, 19), entry("older-high", 4.25, 15)],
+        opponent=[],
+    )
+    news_result = SourceResult(source="news", status="ok", as_of=NOW.isoformat(), data=data)
+    monkeypatch.setattr(generate_module, "news", lambda ctx, opponent, cutoff: news_result)
+    monkeypatch.setattr(generate_module, "NEWS_RANKER", "bm25")
+    monkeypatch.setattr(generate_module, "news_query", lambda ctx, opp, bucket: f"q-{bucket}-{opp}")
+    reply = StructuredResponse(parsed=GeneratedAnswer(answer="ok", cited_doc_ids=[]), usage=None)
+    monkeypatch.setattr(generate_module, "get_llm_client", lambda: FakeClient(lambda **kw: reply))
+
+    answer(_validated(), debug=True, now=NOW)
+
+    out = capsys.readouterr().out
+    block = out[out.index("--- News ranking ---") : out.index("--- Answer context ---")]
+    assert block.splitlines() == [
+        "--- News ranking ---",
+        "## CeeDee Lamb (DAL)",
+        "DAL team news (bm25): q-team-IND",
+        "  4.25  2026-10-15  Title older-high",
+        "  1.50  2026-10-19  Title newer-low",
+        "Opponent (IND) news (bm25): q-opponent-IND",
+        "  (none selected)",
+        "--------------------",
+        "",
+    ]
+
+
+def test_debug_ranking_block_notes_unfetched_news(monkeypatch, capsys):
+    _stub_sources(monkeypatch, _schedule(None, opponent=None), [])
+    reply = StructuredResponse(parsed=GeneratedAnswer(answer="ok", cited_doc_ids=[]), usage=None)
+    monkeypatch.setattr(generate_module, "get_llm_client", lambda: FakeClient(lambda **kw: reply))
+
+    answer(_validated(), debug=True, now=NOW)
+
+    assert "## CeeDee Lamb (DAL)\nnews: not fetched\n" in capsys.readouterr().out

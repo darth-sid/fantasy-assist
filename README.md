@@ -69,8 +69,9 @@ All code lives in the `ffassistant/` package:
     most recent stored news tagged with the player, the player's team, and
     the target-week opponent (three buckets, each item in only one),
     published before a cutoff (now, or the target-week kickoff if that has
-    passed) within a lookback window. Ranking is recency only; no embeddings
-    yet.
+    passed) within a lookback window. The player's own news is newest first;
+    team and opponent news are ranked by `config.NEWS_RANKER` (BM25 by
+    default) against query templates in `config.py`.
   - `context.py` — `render_context` turns the `ValidatedRequest` and each
     player's `PlayerInputs` into a text context: the request header, a line per
     unresolved mention, then per player an "Interpreted as" line when the
@@ -82,6 +83,8 @@ All code lives in the `ffassistant/` package:
     its `doc_id`),
     and one line per past week merging schedule and stats. Empty and errored
     results render as explicit lines, so no player silently drops out.
+  - `ranking.py` — the news rankers (`recency`, `bm25`) behind
+    `config.NEWS_RANKER`, used by `sources/news.py` for team and opponent news.
   - `generate.py` — `answer(validated)`, the stage entry point: gathers each
     player's inputs, renders the context, and has the LLM return an `Answer`
     (`answer` markdown, `citations`). The LLM cites the news ids it relied on;
@@ -109,9 +112,18 @@ no test hits the network.
 Run tests with `pytest` from the repo root. Run the pipeline from the repo root
 with `python -m ffassistant "Lamb or Jefferson this week?"` (no argument falls
 back to the hardcoded `REQUEST`; `DEBUG=true` prints the resolution stage,
-prompt-cache usage, and the answer context). It needs Anthropic API credentials:
+prompt-cache usage, the news ranking, and the answer context). It needs Anthropic API credentials:
 `ANTHROPIC_API_KEY` in a `.env` at the repo root (loaded by `__main__.py`), in the
 environment, or an `ant auth login` profile.
+
+### Switching the news ranker
+
+Team and opponent news are ranked by `NEWS_RANKER` in `ffassistant/config.py`:
+`"bm25"` (default) ranks by relevance to `NEWS_QUERY_TEAM` /
+`NEWS_QUERY_OPPONENT`, and `"recency"` takes the newest items, the pre-v1.3
+behavior. Edit the value and rerun with `DEBUG=true` to compare: the `---
+News ranking ---` block shows which items each ranker picked and their scores.
+The player's own news is always newest first.
 
 ## Running the news collector
 
