@@ -12,8 +12,7 @@ from ffassistant.resolution.validate import validate
 load_dotenv()
 
 # --- Natural-language request (stands in for a real request surface) ---
-REQUEST = "CeeDee Lamb or Justin Jefferson for Week 7? Or maybe Ja'Marr Chase?"
-REQUEST = "Davante or Downs for week 7?"
+REQUEST = "CeeDee Lamb or Justin Jefferson? Or maybe Ja'Marr Chase?"
 # -------------------------------------------------------------------------
 
 request = sys.argv[1] if len(sys.argv) > 1 else REQUEST
