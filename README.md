@@ -27,7 +27,7 @@ store's read side (`ingest.store.iter_items` / `iter_tags`,
 All code lives in the `ffassistant/` package:
 
 - `ingest/` — stage 0, feeds → stored, tagged news items. `poll.py` polls every
-  feed in `config.FEEDS` once, appends new items, and tags them; `gazetteer.py`
+  feed in the config's `ingest.feeds` once, appends new items, and tags them; `gazetteer.py`
   builds the player and team name lookups from the season's roster and team
   list; `tag.py` tags an item with the players (gsis_ids) and teams it
   mentions; `index.py` tags untagged items, or re-tags everything with
@@ -70,8 +70,8 @@ All code lives in the `ffassistant/` package:
     the target-week opponent (three buckets, each item in only one),
     published before a cutoff (now, or the target-week kickoff if that has
     passed) within a lookback window. The player's own news is newest first;
-    team and opponent news are ranked by `config.NEWS_RANKER` (BM25 by
-    default) against query templates in `config.py`.
+    team and opponent news are ranked by the config's `news.ranker` (BM25 by
+    default) against the query templates in `config.yaml`.
   - `context.py` — `render_context` turns the `ValidatedRequest` and each
     player's `PlayerInputs` into a text context: the request header, a line per
     unresolved mention, then per player an "Interpreted as" line when the
@@ -83,8 +83,8 @@ All code lives in the `ffassistant/` package:
     its `doc_id`),
     and one line per past week merging schedule and stats. Empty and errored
     results render as explicit lines, so no player silently drops out.
-  - `ranking.py` — the news rankers (`recency`, `bm25`) behind
-    `config.NEWS_RANKER`, used by `sources/news.py` for team and opponent news.
+  - `ranking.py` — the news rankers (`recency`, `bm25`) behind the config's
+    `news.ranker`, used by `sources/news.py` for team and opponent news.
   - `generate.py` — `answer(validated)`, the stage entry point: gathers each
     player's inputs, renders the context, and has the LLM return an `Answer`
     (`answer` markdown, `citations`). The LLM cites the news ids it relied on;
@@ -93,13 +93,14 @@ All code lives in the `ffassistant/` package:
   dependency is actually called. `nflreadpy_client.py` (nflreadpy),
   `rss_client.py` (feed HTTP), and `llm_client.py`, a provider-neutral `LLMClient`
   interface with one structured-output call (`generate_structured`), picked by
-  `config.LLM_PROVIDER` via `get_llm_client()` and implemented for Anthropic in
+  the config's `llm.provider` via `get_llm_client()` and implemented for Anthropic in
   `anthropic_client.py`. Prompts and output schemas live in the stages.
-- `config.py` — the news retrieval knobs (`NEWS_TOP_K`, `NEWS_TEAM_TOP_K`,
-  `NEWS_OPPONENT_TOP_K`, `NEWS_LOOKBACK_DAYS`,
-  `NEWS_MAX_SUMMARY_CHARS`), the dev-time `SEASON` pin (the current week comes from the
-  schedule at run time), the
-  `DEFAULT_SCORING_FORMAT`, and the `PARSER_MODEL` / `ANSWER_MODEL` choices.
+- `config.py` — the typed `Config` (sections `llm`, `ingest`, `news`) and
+  `load_config()`, which reads and validates `config.yaml` at the repo root:
+  the dev-time `season` pin (the current week comes from the schedule at run
+  time), `default_scoring_format`, `news_dir`, the LLM provider and models,
+  the feeds, and the news retrieval knobs. Each entry point loads it once and
+  passes it down.
 - `__main__.py` — orchestration only: a natural-language request (the first
   command-line argument, or the hardcoded `REQUEST`) → extract → validate →
   answer, followed by a `Sources:` list of cited news items when there are any.
@@ -111,16 +112,18 @@ no test hits the network.
 
 Run tests with `pytest` from the repo root. Run the pipeline from the repo root
 with `python -m ffassistant "Lamb or Jefferson this week?"` (no argument falls
-back to the hardcoded `REQUEST`; `DEBUG=true` prints the resolution stage,
+back to the hardcoded `REQUEST`; `--config path/to/other.yaml` runs with a
+different config file instead of `config.yaml`, and the collector commands
+take the same flag; `DEBUG=true` prints the resolution stage,
 prompt-cache usage, the news ranking, and the answer context). It needs Anthropic API credentials:
 `ANTHROPIC_API_KEY` in a `.env` at the repo root (loaded by `__main__.py`), in the
 environment, or an `ant auth login` profile.
 
 ### Switching the news ranker
 
-Team and opponent news are ranked by `NEWS_RANKER` in `ffassistant/config.py`:
-`"bm25"` (default) ranks by relevance to `NEWS_QUERY_TEAM` /
-`NEWS_QUERY_OPPONENT`, and `"recency"` takes the newest items, the pre-v1.3
+Team and opponent news are ranked by `news.ranker` in `config.yaml`:
+`bm25` (default) ranks by relevance to `news.query_team` /
+`news.query_opponent`, and `recency` takes the newest items, the pre-v1.3
 behavior. Edit the value and rerun with `DEBUG=true` to compare: the `---
 News ranking ---` block shows which items each ranker picked and their scores.
 The player's own news is always newest first.

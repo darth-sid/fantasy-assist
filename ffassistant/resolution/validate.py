@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import get_args
 
-from ffassistant.config import DEFAULT_SCORING_FORMAT, SEASON
+from ffassistant.config import Config
 from ffassistant.resolution.models import (
     ExtractedRequest,
     RejectedMention,
@@ -17,7 +17,7 @@ _SCORING_FORMATS = get_args(ScoringFormat)
 
 
 def validate(
-    extracted: ExtractedRequest, raw_prompt: str, current_week: int
+    extracted: ExtractedRequest, raw_prompt: str, current_week: int, cfg: Config
 ) -> ValidatedRequest:
     errors = []
     if not extracted.players:
@@ -30,14 +30,14 @@ def validate(
     scoring_format = (
         extracted.scoring_format
         if extracted.scoring_format is not None
-        else DEFAULT_SCORING_FORMAT
+        else cfg.default_scoring_format
     )
     if scoring_format not in _SCORING_FORMATS:
         errors.append(
             f"scoring format {scoring_format!r} is not one of {', '.join(_SCORING_FORMATS)}"
         )
 
-    roster = load_fantasy_roster(SEASON)
+    roster = load_fantasy_roster(cfg.season)
     players: list[ValidPlayer] = []
     rejected: list[RejectedMention] = []
     for player in extracted.players:
@@ -64,7 +64,7 @@ def validate(
 
     return ValidatedRequest(
         raw_prompt=raw_prompt,
-        season=SEASON,
+        season=cfg.season,
         week=week,
         scoring_format=scoring_format,
         players=players,

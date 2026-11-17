@@ -32,7 +32,7 @@ split into three stages plus shared plumbing: `ingest/` (stage 0, feeds -> store
 news items, independent of the other two), `resolution/` (stage 1, prompt ->
 `ValidatedRequest`), `answering/` (stage 2, `ValidatedRequest` -> `Answer`, with
 `answering/sources/` inside it), `clients/`, and flat `config.py` /
-`__main__.py`. `tests/` mirrors the package's folders (`tests/clients/`, `tests/ingest/`, `tests/resolution/`,
+`__main__.py`, plus `config.yaml` at the repo root. `tests/` mirrors the package's folders (`tests/clients/`, `tests/ingest/`, `tests/resolution/`,
 `tests/answering/`, `tests/answering/sources/`). Paths below are relative to
 `ffassistant/`.
 
@@ -53,9 +53,9 @@ StructuredResponse[T]`, plus the neutral types it speaks: `SystemBlock`
 (`text`, `cache: bool`, a prompt-caching hint providers may ignore),
 `TokenUsage` (`input_tokens`, `output_tokens`, `cache_write_tokens`,
 `cache_read_tokens`), and `StructuredResponse` (`parsed: T`, `usage:
-TokenUsage`). `get_llm_client()` returns the implementation named by
-`config.LLM_PROVIDER` (`"anthropic"`; anything else raises `ValueError`); the
-stages do `client = get_llm_client()` then `client.generate_structured(...)`,
+TokenUsage`). `get_llm_client(llm)` returns the implementation named by
+`llm.provider` (`get_llm_client(cfg.llm)`; anything but `"anthropic"` raises
+`ValueError`); the stages do `client = get_llm_client(cfg.llm)` then `client.generate_structured(...)`,
 and tests monkeypatch
 `get_llm_client`. `clients/anthropic_client.py`'s `AnthropicClient` is raw SDK
 access only (`messages.parse()`, no sampling parameters): it turns `SystemBlock`s into
@@ -64,8 +64,9 @@ text blocks (`cache=True` -> `cache_control` ephemeral) and the SDK usage into
 use them. Nothing else imports either library.
 
 `__main__.py` is orchestration only: one natural-language request ->
-`extract` -> `validate` -> `answer`. The request is the first command-line
-argument (`python -m ffassistant "question"`), falling back to the hardcoded
+`extract` -> `validate` -> `answer`. The request is the optional positional
+argument (`python -m ffassistant [--config path] "question"`, parsed with
+argparse), falling back to the hardcoded
 `REQUEST`. It loads `.env` via `load_dotenv()`, prints the request, computes the
 current week once with `get_current_week()` and passes it to both
 `extract(request, current_week, debug=...)` and `validate(extracted, request,
@@ -83,21 +84,38 @@ ranker, the filled-in query, and each selected item's score, date, and title,
 highest score first; `news: not fetched` / `news: <status>` otherwise), then
 the rendered context it already built, before the LLM call.
 
-`config.py` pins `SEASON = 2026`, `DEFAULT_SCORING_FORMAT = "PPR"`, and the
-models `PARSER_MODEL` / `ANSWER_MODEL` (both `"claude-haiku-5-5"`), and the
-news retrieval knobs `NEWS_TOP_K = 5` (player bucket), `NEWS_TEAM_TOP_K = 3`,
-`NEWS_OPPONENT_TOP_K = 3`, `NEWS_LOOKBACK_DAYS = 14`,
-`NEWS_MAX_SUMMARY_CHARS = 500`, and the team/opponent ranking settings:
-`NEWS_RANKER = "bm25"` (or `"recency"`), the query templates `NEWS_QUERY_TEAM`
-/ `NEWS_QUERY_OPPONENT` (placeholders `{player}`, `{position_words}`, `{team}`,
-`{opponent}`), and `NEWS_POSITION_WORDS` (QB/RB/WR/TE/K -> words for
-`{position_words}`). There is no current-week pin; the current week
-comes from the schedule at run time.
+**Config.** Settings live in `config.yaml` at the repo root. `config.py` holds
+the typed, frozen Pydantic `Config` and `load_config(path=CONFIG_PATH)`, which
+reads and validates it (unknown or missing keys raise, naming the field).
+`Config`: `season` (2026), `default_scoring_format` (`PPR`), `news_dir`
+(`data/news`, resolved against the repo root so cwd doesn't matter under
+cron), and three sections: `llm` (`LLMConfig`: `provider` `anthropic`,
+`parser_model` / `answer_model` both `claude-haiku-5-5`), `ingest`
+(`IngestConfig`: `feeds`, source name -> URL), and `news` (`NewsConfig`:
+`top_k` 5 (player bucket), `team_top_k` 3, `opponent_top_k` 3,
+`lookback_days` 14, `max_summary_chars` 500, `ranker` `bm25` or `recency`, the
+query templates `query_team` / `query_opponent` (placeholders `{player}`,
+`{position_words}`, `{team}`, `{opponent}`), and `position_words`
+(QB/RB/WR/TE/K -> words for `{position_words}`)). There is no current-week
+pin; the current week comes from the schedule at run time. **Loaded once and
+threaded down; nothing reads config from a global.** Each entry point
+(`__main__.py`, `ingest/__main__.py`, the `ingest.index` CLI) calls
+`load_config()` once, on the file named by its `--config path` flag (default:
+the repo-root `config.yaml`; a relative path is relative to the cwd). The rule for what to pass: entry points and stage
+functions take the whole `Config` (`extract`, `validate`, `answer`,
+`gather_inputs`, `render_context`, `news`, `poll`, `index`); plumbing outside
+the stages and small helpers take the narrowest piece
+(`get_llm_client(cfg.llm)`, the `store` functions take `news_dir`,
+`news_query(..., cfg.news)`, the debug ranking print gets `cfg.news`,
+`_clean_summary` gets `max_chars`). Variants are copies via
+`model_copy(update=...)`; tests use `tests/helpers.py` (`CFG`, the real
+config, plus `with_news(**overrides)` and `with_news_dir(path)`) instead of
+monkeypatching.
 
 ### Stage 0: ingest
 
-`ingest/` is a standalone collector (`python -m ffassistant.ingest`): one poll of
-every feed in `config.FEEDS` per invocation, then exit. Scheduling is external
+`ingest/` is a standalone collector (`python -m ffassistant.ingest [--config path]`): one poll of
+every feed in the config's `ingest.feeds` per invocation, then exit. Scheduling is external
 (cron/launchd); poll frequency is not in config. It builds the news history that
 retrieval reads. **Dependency rule:** `ingest/` imports nothing from
 `resolution/` or `answering/` (it may use `clients/` and `config`);
@@ -108,13 +126,13 @@ nothing from it.
 - `clients/rss_client.py`: `fetch_feed(url) -> bytes`, raw HTTP only (`requests`,
   20 s timeout, `ffassistant/0.1` User-Agent; non-200 raises).
 - `ingest/store.py` is the only module that touches `data/news/`:
-  `load_doc_ids()`, `append_items(items)`, `iter_items()`, and for tags
-  `iter_tags()`, `append_tags(tags)`, `replace_tags(tags)` (writes a temp file
+  `load_doc_ids(news_dir)`, `append_items(news_dir, items)`,
+  `iter_items(news_dir)`, and for tags `iter_tags(news_dir)`,
+  `append_tags(news_dir, tags)`, `replace_tags(news_dir, tags)` (writes a temp file
   and renames it over `tags.jsonl`, so a failed rebuild never leaves it
   half-written). `iter_items`/`iter_tags` are retrieval's read interface; a
-  missing file yields nothing. The path is `config.NEWS_DIR`
-  (`data/news`) resolved against the repo root, so cwd doesn't matter under
-  cron. `data/` is gitignored.
+  missing file yields nothing. Callers pass the config's `news_dir`.
+  `data/` is gitignored.
 - `ingest/poll.py`: loads stored `doc_id`s, then per feed independently
   (a failure doesn't stop the others) fetches, parses with `feedparser`
   (malformed-but-has-entries -> warning and use them; no entries -> logged),
@@ -151,12 +169,12 @@ nothing from it.
   summary, plus the tagged players' teams. Lists are deduped and sorted.
   A player's team is their roster team at tagging time, so a traded player's
   old items move only on `--rebuild`.
-- `ingest/index.py` (`python -m ffassistant.ingest.index [--rebuild]`):
-  `index(rebuild=False) -> int`. Default is catch-up, tagging every item with
+- `ingest/index.py` (`python -m ffassistant.ingest.index [--rebuild] [--config path]`):
+  `index(cfg, rebuild=False) -> int`. Default is catch-up, tagging every item with
   no tags row; `--rebuild` re-tags every item and replaces `tags.jsonl` (after
   a tagger change, or to pick up roster moves). Prints `tagged N items`.
 - `ingest/overrides.py`: two independent per-feed override registries keyed by
-  the `FEEDS` key; a feed with no entry uses the defaults. `DATE_PARSERS[key]`
+  the `ingest.feeds` key; a feed with no entry uses the defaults. `DATE_PARSERS[key]`
   (raw date string -> aware datetime) replaces feedparser's date parse, and
   `ID_KEYS[key]` ((url, raw date) -> string hashed into `doc_id`) replaces the
   default of the URL alone. **Adding a feed:** fetch it and check item count,
@@ -169,7 +187,7 @@ nothing from it.
   rebuildable from the items at any time.
 - `NewsItem`: `doc_id` (first 16 hex of sha256 of the normalized URL; for
   feeds with an `ID_KEYS` override, of that override's key; RotoWire: `url + "\n" + raw date string`), `url` (stripped,
-  `#fragment` removed, nothing else), `source` (the `FEEDS` key), `title` and
+  `#fragment` removed, nothing else), `source` (the `ingest.feeds` key), `title` and
   `summary` (plain text: tags stripped, entities decoded, whitespace
   collapsed), `published_at` (ISO 8601 UTC; falls back to `fetched_at` when the
   date is missing or unparseable), `fetched_at` (poll time, ISO 8601 UTC),
@@ -201,7 +219,7 @@ position | status` line per player.
 `resolution/extract.py`: `extract(prompt, current_week, debug=False) ->
 ExtractedRequest`. **Players are resolved by the LLM with the roster in
 context, not by string matching.** Two system blocks: instructions (with
-`SEASON` and the passed-in current week), then the rendered roster in its own block with `cache_control` (ephemeral) so repeat
+`season` and the passed-in current week), then the rendered roster in its own block with `cache_control` (ephemeral) so repeat
 calls hit the prompt cache. The instructions: map each mention to a roster
 `gsis_id`, trying hard on nicknames, typos, punctuation, and missing suffixes,
 null only with no reasonable match; resolve relative weeks from the current week,
@@ -215,7 +233,7 @@ ValidatedRequest`. Request-level errors are collected and raised together as
 outside 1 to 18; scoring format not one of the three; every mention rejected
 (one `could not resolve "<mention>": <reason>` error each). Defaults when null:
 week = the passed-in current week, scoring format =
-`DEFAULT_SCORING_FORMAT`. Player-level (collected in `rejected`, the rest still answered): `player_id` null ->
+`default_scoring_format`. Player-level (collected in `rejected`, the rest still answered): `player_id` null ->
 "no matching player found"; `player_id` not in the roster -> "unknown player
 id" (catches hallucinated ids); a repeated `player_id` keeps the first and
 drops the duplicate silently.
@@ -240,7 +258,7 @@ earliest row); `player_name` and `position` come from the `ValidPlayer`.
 is the stage entry point. `gather_inputs(validated, now=None)` builds a
 `PlayerInputs` per valid player (`now` defaults to the current UTC time and is
 injectable for tests); `render_context` turns them into the text context, sent
-via `generate_structured` (`config.ANSWER_MODEL`) with a `GeneratedAnswer` output
+via `generate_structured` (`llm.answer_model`) with a `GeneratedAnswer` output
 schema (`answer`, `cited_doc_ids`). **News cutoff:** `news_cutoff(schedule,
 week, now)` = `min(now, kickoff of the target-week game)`, so upcoming weeks use
 now and past weeks use that game's kickoff; it is None (news not fetched) when
@@ -283,27 +301,29 @@ the `SourceResult` envelope (`source`, `status`, `as_of`, `data`, `error`).
 - `news.py` (`NewsData`: `cutoff`, `player`, `team`, `opponent`, each a
   `list[NewsEntry]`; `NewsEntry`: `doc_id`, `source`, `published_at`, `title`,
   `summary`, `url`, `score` (the ranker's score, None for the player bucket;
-  never rendered into the context)): `news(ctx, opponent, cutoff)`, the one
-  source that takes extra arguments (the target-week opponent and the cutoff).
+  never rendered into the context)): `news(ctx, opponent, cutoff, cfg)`, the one
+  source that takes extra arguments (the target-week opponent, the cutoff, and
+  the config).
   Retrieval over the ingest-time tags; team scoping is the only filter. Joins `iter_items()` with `iter_tags()` on `doc_id` (items
   with no tags row are skipped) and keeps items with `cutoff -
-  NEWS_LOOKBACK_DAYS <= published_at < cutoff`, newest first. Each item lands in
+  news.lookback_days <= published_at < cutoff`, newest first. Each item lands in
   the first bucket it qualifies for: player (`ctx.player_id` in `player_ids`),
   then team (`ctx.team` in `teams`), then opponent (`opponent` in `teams`).
-  The player bucket is always newest first, capped at `NEWS_TOP_K` (the newest
+  The player bucket is always newest first, capped at `news.top_k` (the newest
   update about the player is what matters). The team and opponent buckets are
-  ranked by `config.NEWS_RANKER` against their query template (`news_query(ctx,
-  opponent, bucket)`), capped at `NEWS_TEAM_TOP_K` / `NEWS_OPPONENT_TOP_K`,
+  ranked by `news.ranker` against their query template (`news_query(ctx,
+  opponent, bucket, cfg.news)`), capped at `news.team_top_k` /
+  `news.opponent_top_k`,
   then rendered newest first. Summaries
   have RotoWire's trailing `Visit RotoWire.com for more analysis on this
-  update.` stripped, then are truncated to `NEWS_MAX_SUMMARY_CHARS` plus `...`.
+  update.` stripped, then are truncated to `news.max_summary_chars` plus `...`.
   `status="empty"` only when all three buckets are empty (including missing
   files); `as_of` is the cutoff. Out of scope: the RotoWire id crosswalk.
 
 `answering/ranking.py`: the `Ranker` ABC is constructed once over a corpus
 (`Ranker(corpus)`, any index built in `__init__`) and has one method,
 `rank(query, candidates) -> list[(RankDoc, score)]` in rank order (`RankDoc`:
-`doc_id`, `text`, `published_at`). `RANKERS` maps the `NEWS_RANKER` name to the
+`doc_id`, `text`, `published_at`). `RANKERS` maps the `news.ranker` name to the
 class. `news` constructs one ranker per call and uses it for both the team and
 the opponent query, so the index is never rebuilt between queries. Ties go to
 the newer document. `RecencyRanker`: score = publish timestamp, query and
@@ -376,7 +396,7 @@ Working mode: **Build** — Sid designs, Claude implements to spec.
 
 ## LLM usage
 
-Two LLM touch points, both via `client = get_llm_client()` then
+Two LLM touch points, both via `client = get_llm_client(cfg.llm)` then
 `client.generate_structured(...)`
 (`clients/llm_client.py`; the Anthropic implementation uses
 `messages.parse()` + a Pydantic model, with no `temperature`). The
@@ -384,12 +404,12 @@ prompts and output schemas live in the calling stage modules:
 1. `resolution/extract.py` — turns the raw natural-language prompt into an
    `ExtractedRequest` (player mentions **resolved to `gsis_id`s** against the
    season's fantasy roster, week, scoring format), given the current week. The roster (~21k tokens for
-   2026) is its own prompt-cached system block. Model: `config.PARSER_MODEL`.
+   2026) is its own prompt-cached system block. Model: `llm.parser_model`.
    Its output is untrusted until `resolution/validate.py` checks it.
 2. `answering/generate.py` — **makes the start/sit decision.** Gets the rendered
    context (request, unresolved mentions, per-player name interpretation,
    roster status, injury report, schedule, matchup, player/team/opponent news, and recent stats) and returns the `Answer` envelope.
-   Model: `config.ANSWER_MODEL`. The system prompt tells it to say plainly when
+   Model: `llm.answer_model`. The system prompt tells it to say plainly when
    a player's data is missing or failed to load rather than fill the gap, that
    a player on bye in the target week cannot score, that a player marked `Out`
    or on a reserve or PUP list will not play (`Doubtful` unlikely, `Questionable`
@@ -704,3 +724,16 @@ The **body is authoritative** (current state); the log is provenance.
 - 2026-11-17 — `AnthropicClient` no longer sends `temperature=0`: Claude Haiku
   5.5 (now `PARSER_MODEL` / `ANSWER_MODEL`) rejects it with a 400, and newer
   API versions reject sampling parameters on every model.
+- 2026-11-17 — Config moved from `config.py` constants to `config.yaml` at the
+  repo root, loaded by `load_config()` into a typed, frozen Pydantic `Config`
+  with `llm`, `ingest`, and `news` sections (`season`,
+  `default_scoring_format`, and `news_dir` top level, since both ingest and
+  answering read the news files). Unknown or missing keys raise. `PyYAML==6.0.3`.
+- 2026-11-17 — Config is loaded once per entry point and threaded down; no
+  global access. Entry points and stage functions take the whole `Config`;
+  plumbing outside the stages and small helpers take the narrowest piece
+  (`get_llm_client(cfg.llm)`, `store` functions take `news_dir`). Tests build
+  variants with `model_copy` instead of monkeypatching constants.
+- 2026-11-17 — Every entry point (`python -m ffassistant`, `ffassistant.ingest`,
+  `ffassistant.ingest.index`) takes `--config path` (default: the repo-root
+  `config.yaml`); `__main__.py` parses its arguments with argparse.

@@ -9,7 +9,7 @@ from ffassistant.answering.sources.injuries import InjuryData
 from ffassistant.answering.sources.news import NewsData, NewsEntry
 from ffassistant.answering.sources.recent_stats import GameLine, RecentStatsData
 from ffassistant.answering.sources.schedule import ScheduleData, ScheduleWeek
-from ffassistant.config import NEWS_LOOKBACK_DAYS
+from ffassistant.config import Config
 from ffassistant.resolution.models import ValidatedRequest
 
 _POINTS_KEYS = ("fantasy_points", "fantasy_points_ppr")
@@ -150,6 +150,7 @@ def _news_lines(
     ctx: ResolvedContext,
     news: SourceResult[NewsData] | None,
     sched: SourceResult[ScheduleData],
+    lookback_days: int,
 ) -> list[str]:
     if news is None:
         if sched.status != "ok":
@@ -160,9 +161,9 @@ def _news_lines(
     if news.status == "error":
         return [f"News failed to load: {news.error}"]
     if news.status == "empty":
-        return [f"No news found in the {NEWS_LOOKBACK_DAYS} days before {cutoff}"]
+        return [f"No news found in the {lookback_days} days before {cutoff}"]
     lines = [
-        f"News (most recent first, before {cutoff}, last {NEWS_LOOKBACK_DAYS} days):"
+        f"News (most recent first, before {cutoff}, last {lookback_days} days):"
     ]
     groups = [
         (f"About {ctx.player_name}:", news.data.player),
@@ -196,7 +197,7 @@ def _past_week_line(
     return f"{prefix}: did not play"
 
 
-def _render_player(inputs: PlayerInputs, mention: str) -> list[str]:
+def _render_player(inputs: PlayerInputs, mention: str, lookback_days: int) -> list[str]:
     ctx, stats, sched = inputs.ctx, inputs.recent_stats, inputs.schedule
     is_kicker = stats.status == "ok" and stats.data.position == "K"
     games = {game.week: game for game in stats.data.games} if stats.status == "ok" else {}
@@ -211,7 +212,7 @@ def _render_player(inputs: PlayerInputs, mention: str) -> list[str]:
         weeks = {week.week: week for week in sched.data.weeks}
         lines.append(_target_week_line(weeks[ctx.week]))
         lines.extend(_matchup_lines(ctx, sched, inputs.defense))
-        lines.extend(_news_lines(ctx, inputs.news, sched))
+        lines.extend(_news_lines(ctx, inputs.news, sched, lookback_days))
         if is_kicker:
             lines.append(_KICKER_LINE)
         if stats.status == "error":
@@ -227,7 +228,7 @@ def _render_player(inputs: PlayerInputs, mention: str) -> list[str]:
     else:
         lines.append(f"No schedule found for {ctx.team} through Week {ctx.week}.")
     lines.extend(_matchup_lines(ctx, sched, inputs.defense))
-    lines.extend(_news_lines(ctx, inputs.news, sched))
+    lines.extend(_news_lines(ctx, inputs.news, sched, lookback_days))
     if is_kicker:
         lines.append(_KICKER_LINE)
     if stats.status == "error":
@@ -239,7 +240,9 @@ def _render_player(inputs: PlayerInputs, mention: str) -> list[str]:
     return lines
 
 
-def render_context(validated: ValidatedRequest, players: list[PlayerInputs]) -> str:
+def render_context(
+    validated: ValidatedRequest, players: list[PlayerInputs], cfg: Config
+) -> str:
     lines = [
         f"Question: {validated.raw_prompt}",
         f"Week: {validated.week}",
@@ -252,5 +255,5 @@ def render_context(validated: ValidatedRequest, players: list[PlayerInputs]) -> 
     mentions = {player.player_id: player.mention for player in validated.players}
     for inputs in players:
         lines.append("")
-        lines.extend(_render_player(inputs, mentions[inputs.ctx.player_id]))
+        lines.extend(_render_player(inputs, mentions[inputs.ctx.player_id], cfg.news.lookback_days))
     return "\n".join(lines)

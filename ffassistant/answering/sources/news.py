@@ -5,17 +5,7 @@ from datetime import datetime, timedelta
 
 from ffassistant.answering.models import ResolvedContext, SourceResult
 from ffassistant.answering.ranking import RANKERS, RankDoc, Ranker
-from ffassistant.config import (
-    NEWS_LOOKBACK_DAYS,
-    NEWS_MAX_SUMMARY_CHARS,
-    NEWS_OPPONENT_TOP_K,
-    NEWS_POSITION_WORDS,
-    NEWS_QUERY_OPPONENT,
-    NEWS_QUERY_TEAM,
-    NEWS_RANKER,
-    NEWS_TEAM_TOP_K,
-    NEWS_TOP_K,
-)
+from ffassistant.config import Config, NewsConfig
 from ffassistant.ingest.models import NewsItem, NewsTags
 from ffassistant.ingest.store import iter_items, iter_tags
 
@@ -41,31 +31,31 @@ class NewsData:
     opponent: list[NewsEntry]
 
 
-def _clean_summary(summary: str) -> str:
+def _clean_summary(summary: str, max_chars: int) -> str:
     summary = summary.removesuffix(_ROTOWIRE_BOILERPLATE).rstrip()
-    if len(summary) > NEWS_MAX_SUMMARY_CHARS:
-        return summary[:NEWS_MAX_SUMMARY_CHARS] + "..."
+    if len(summary) > max_chars:
+        return summary[:max_chars] + "..."
     return summary
 
 
-def _entry(item: NewsItem, score: float | None = None) -> NewsEntry:
+def _entry(item: NewsItem, max_chars: int, score: float | None = None) -> NewsEntry:
     return NewsEntry(
         doc_id=item.doc_id,
         source=item.source,
         published_at=item.published_at,
         title=item.title,
-        summary=_clean_summary(item.summary),
+        summary=_clean_summary(item.summary, max_chars),
         url=item.url,
         score=score,
     )
 
 
-def news_query(ctx: ResolvedContext, opponent: str, bucket: str) -> str:
+def news_query(ctx: ResolvedContext, opponent: str, bucket: str, cfg: NewsConfig) -> str:
     """Fills in the team or opponent query template for this player."""
-    template = {"team": NEWS_QUERY_TEAM, "opponent": NEWS_QUERY_OPPONENT}[bucket]
+    template = {"team": cfg.query_team, "opponent": cfg.query_opponent}[bucket]
     return template.format(
         player=ctx.player_name,
-        position_words=NEWS_POSITION_WORDS.get(ctx.position, ""),
+        position_words=cfg.position_words.get(ctx.position, ""),
         team=ctx.team,
         opponent=opponent,
     )
@@ -76,26 +66,29 @@ def _published(item: NewsItem) -> datetime:
 
 
 def _rank_bucket(
-    ranker: Ranker, query: str, candidates: list[NewsItem], top_k: int
+    ranker: Ranker, query: str, candidates: list[NewsItem], top_k: int, max_chars: int
 ) -> list[NewsEntry]:
     by_id = {item.doc_id: item for item in candidates}
     candidate_docs = [doc for doc in ranker.corpus if doc.doc_id in by_id]
     ranked = ranker.rank(query, candidate_docs)[:top_k]
-    selected = [_entry(by_id[doc.doc_id], score) for doc, score in ranked]
+    selected = [_entry(by_id[doc.doc_id], max_chars, score) for doc, score in ranked]
     return sorted(selected, key=lambda entry: entry.published_at, reverse=True)
 
 
-def news(ctx: ResolvedContext, opponent: str, cutoff: datetime) -> SourceResult[NewsData]:
+def news(
+    ctx: ResolvedContext, opponent: str, cutoff: datetime, cfg: Config
+) -> SourceResult[NewsData]:
     source = "news"
     as_of = cutoff.isoformat(timespec="seconds")
+    news_cfg, max_chars = cfg.news, cfg.news.max_summary_chars
 
     try:
-        tags: dict[str, NewsTags] = {entry.doc_id: entry for entry in iter_tags()}
-        window_start = cutoff - timedelta(days=NEWS_LOOKBACK_DAYS)
+        tags: dict[str, NewsTags] = {entry.doc_id: entry for entry in iter_tags(cfg.news_dir)}
+        window_start = cutoff - timedelta(days=news_cfg.lookback_days)
         in_window = sorted(
             (
                 (item, tags[item.doc_id])
-                for item in iter_items()
+                for item in iter_items(cfg.news_dir)
                 if item.doc_id in tags and window_start <= _published(item) < cutoff
             ),
             key=lambda pair: _published(pair[0]),
@@ -117,10 +110,14 @@ def news(ctx: ResolvedContext, opponent: str, cutoff: datetime) -> SourceResult[
 
         # Term weights come from every tagged item in the window, not just one bucket's candidates.
         corpus = [
-            RankDoc(item.doc_id, f"{item.title} {_clean_summary(item.summary)}", _published(item))
+            RankDoc(
+                item.doc_id,
+                f"{item.title} {_clean_summary(item.summary, max_chars)}",
+                _published(item),
+            )
             for item, _ in in_window
         ]
-        ranker = RANKERS[NEWS_RANKER](corpus)
+        ranker = RANKERS[news_cfg.ranker](corpus)
 
         return SourceResult(
             source=source,
@@ -128,15 +125,20 @@ def news(ctx: ResolvedContext, opponent: str, cutoff: datetime) -> SourceResult[
             as_of=as_of,
             data=NewsData(
                 cutoff=as_of,
-                player=[_entry(item) for item in buckets["player"][:NEWS_TOP_K]],
+                player=[_entry(item, max_chars) for item in buckets["player"][: news_cfg.top_k]],
                 team=_rank_bucket(
-                    ranker, news_query(ctx, opponent, "team"), buckets["team"], NEWS_TEAM_TOP_K
+                    ranker,
+                    news_query(ctx, opponent, "team", news_cfg),
+                    buckets["team"],
+                    news_cfg.team_top_k,
+                    max_chars,
                 ),
                 opponent=_rank_bucket(
                     ranker,
-                    news_query(ctx, opponent, "opponent"),
+                    news_query(ctx, opponent, "opponent", news_cfg),
                     buckets["opponent"],
-                    NEWS_OPPONENT_TOP_K,
+                    news_cfg.opponent_top_k,
+                    max_chars,
                 ),
             ),
         )

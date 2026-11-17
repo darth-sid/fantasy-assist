@@ -6,6 +6,7 @@ from ffassistant.answering.sources.news import NewsData, NewsEntry
 from ffassistant.answering.sources.recent_stats import GameLine, RecentStatsData
 from ffassistant.answering.sources.schedule import ScheduleData, ScheduleWeek
 from ffassistant.resolution.models import RejectedMention, ValidatedRequest, ValidPlayer
+from tests.helpers import CFG
 
 
 def _validated(
@@ -37,7 +38,7 @@ def _render(
     mentions: dict[str, str] | None = None,
     rejected: list[RejectedMention] | None = None,
 ) -> str:
-    return render_context(_validated(players, mentions, rejected), players)
+    return render_context(_validated(players, mentions, rejected), players, CFG)
 
 
 def _ctx(

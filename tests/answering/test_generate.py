@@ -13,6 +13,7 @@ from ffassistant.answering.sources.news import NewsData, NewsEntry
 from ffassistant.answering.sources.schedule import ScheduleData, ScheduleWeek
 from ffassistant.clients.llm_client import StructuredResponse
 from ffassistant.resolution.models import ValidatedRequest, ValidPlayer
+from tests.helpers import CFG, with_news
 
 
 def _validated() -> ValidatedRequest:
@@ -85,7 +86,7 @@ def test_no_cutoff_when_schedule_fails():
 def _stub_sources(monkeypatch, sched, news_calls: list) -> None:
     empty = lambda name: SourceResult(source=name, status="empty", as_of="Week 7")
 
-    def fake_news(ctx, opponent, cutoff):
+    def fake_news(ctx, opponent, cutoff, cfg):
         news_calls.append((opponent, cutoff))
         return empty("news")
 
@@ -101,7 +102,7 @@ def test_gather_inputs_fetches_news_with_cutoff(monkeypatch):
     calls = []
     _stub_sources(monkeypatch, _schedule("2026-10-25T17:00:00+00:00"), calls)
 
-    [inputs] = gather_inputs(_validated(), now=NOW)
+    [inputs] = gather_inputs(_validated(), CFG, now=NOW)
 
     assert calls == [("IND", NOW)]
     assert inputs.news.source == "news"
@@ -111,7 +112,7 @@ def test_gather_inputs_skips_news_on_bye(monkeypatch):
     calls = []
     _stub_sources(monkeypatch, _schedule(None, opponent=None), calls)
 
-    [inputs] = gather_inputs(_validated(), now=NOW)
+    [inputs] = gather_inputs(_validated(), CFG, now=NOW)
 
     assert calls == []
     assert inputs.news is None
@@ -122,7 +123,7 @@ def test_gather_inputs_skips_news_when_schedule_fails(monkeypatch):
     failed = SourceResult(source="schedule", status="error", as_of="Week 7", error="boom")
     _stub_sources(monkeypatch, failed, calls)
 
-    [inputs] = gather_inputs(_validated(), now=NOW)
+    [inputs] = gather_inputs(_validated(), CFG, now=NOW)
 
     assert calls == []
     assert inputs.news is None
@@ -144,15 +145,15 @@ def test_citations_come_from_every_bucket_and_hallucinated_ids_are_dropped(monke
         cutoff=NOW.isoformat(), player=[entry("p")], team=[entry("t")], opponent=[entry("o")]
     )
     news_result = SourceResult(source="news", status="ok", as_of=NOW.isoformat(), data=data)
-    monkeypatch.setattr(generate_module, "news", lambda ctx, opponent, cutoff: news_result)
+    monkeypatch.setattr(generate_module, "news", lambda ctx, opponent, cutoff, cfg: news_result)
     reply = StructuredResponse(
         parsed=GeneratedAnswer(answer="Start.", cited_doc_ids=["o", "fake", "p", "t"]), usage=None
     )
     monkeypatch.setattr(
-        generate_module, "get_llm_client", lambda: FakeClient(lambda **kwargs: reply)
+        generate_module, "get_llm_client", lambda llm: FakeClient(lambda **kwargs: reply)
     )
 
-    result = answer(_validated(), now=NOW)
+    result = answer(_validated(), CFG, now=NOW)
 
     assert [citation.doc_id for citation in result.citations] == ["o", "p", "t"]
     assert result.citations[0] == Citation(
@@ -179,9 +180,9 @@ def test_answer_runs_sources_and_returns_generated_output(monkeypatch):
     monkeypatch.setattr(generate_module, "schedule", lambda ctx: empty("schedule"))
     monkeypatch.setattr(generate_module, "defense", lambda ctx: empty("defense"))
     monkeypatch.setattr(generate_module, "injuries", lambda ctx: empty("injuries"))
-    monkeypatch.setattr(generate_module, "get_llm_client", lambda: FakeClient(fake_generate))
+    monkeypatch.setattr(generate_module, "get_llm_client", lambda llm: FakeClient(fake_generate))
 
-    result = answer(_validated())
+    result = answer(_validated(), CFG)
 
     inputs = PlayerInputs(
         ctx=ctx,
@@ -192,7 +193,7 @@ def test_answer_runs_sources_and_returns_generated_output(monkeypatch):
         news=None,
     )
     assert result == Answer(answer="Start **Lamb**.", citations=[])
-    assert seen["context"] == generate_module.render_context(_validated(), [inputs])
+    assert seen["context"] == generate_module.render_context(_validated(), [inputs], CFG)
 
 
 def test_debug_prints_news_ranking_block(monkeypatch, capsys):
@@ -216,13 +217,12 @@ def test_debug_prints_news_ranking_block(monkeypatch, capsys):
         opponent=[],
     )
     news_result = SourceResult(source="news", status="ok", as_of=NOW.isoformat(), data=data)
-    monkeypatch.setattr(generate_module, "news", lambda ctx, opponent, cutoff: news_result)
-    monkeypatch.setattr(generate_module, "NEWS_RANKER", "bm25")
-    monkeypatch.setattr(generate_module, "news_query", lambda ctx, opp, bucket: f"q-{bucket}-{opp}")
+    monkeypatch.setattr(generate_module, "news", lambda ctx, opponent, cutoff, cfg: news_result)
+    monkeypatch.setattr(generate_module, "news_query", lambda ctx, opp, bucket, cfg: f"q-{bucket}-{opp}")
     reply = StructuredResponse(parsed=GeneratedAnswer(answer="ok", cited_doc_ids=[]), usage=None)
-    monkeypatch.setattr(generate_module, "get_llm_client", lambda: FakeClient(lambda **kw: reply))
+    monkeypatch.setattr(generate_module, "get_llm_client", lambda llm: FakeClient(lambda **kw: reply))
 
-    answer(_validated(), debug=True, now=NOW)
+    answer(_validated(), with_news(ranker="bm25"), debug=True, now=NOW)
 
     out = capsys.readouterr().out
     block = out[out.index("--- News ranking ---") : out.index("--- Answer context ---")]
@@ -242,8 +242,8 @@ def test_debug_prints_news_ranking_block(monkeypatch, capsys):
 def test_debug_ranking_block_notes_unfetched_news(monkeypatch, capsys):
     _stub_sources(monkeypatch, _schedule(None, opponent=None), [])
     reply = StructuredResponse(parsed=GeneratedAnswer(answer="ok", cited_doc_ids=[]), usage=None)
-    monkeypatch.setattr(generate_module, "get_llm_client", lambda: FakeClient(lambda **kw: reply))
+    monkeypatch.setattr(generate_module, "get_llm_client", lambda llm: FakeClient(lambda **kw: reply))
 
-    answer(_validated(), debug=True, now=NOW)
+    answer(_validated(), CFG, debug=True, now=NOW)
 
     assert "## CeeDee Lamb (DAL)\nnews: not fetched\n" in capsys.readouterr().out

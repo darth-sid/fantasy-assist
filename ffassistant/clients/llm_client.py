@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel
 
-from ffassistant.config import LLM_PROVIDER
+from ffassistant.config import LLMConfig
 
 
 @dataclass
@@ -51,11 +51,11 @@ class LLMClient(ABC):
         """Sends one user message and returns the reply parsed into output_model."""
 
 
-def get_llm_client() -> LLMClient:
-    """Returns the client for config.LLM_PROVIDER."""
+def get_llm_client(llm: LLMConfig) -> LLMClient:
+    """Returns the client for llm.provider."""
     # Imported here because each provider module imports LLMClient from this one.
-    if LLM_PROVIDER == "anthropic":
+    if llm.provider == "anthropic":
         from ffassistant.clients.anthropic_client import AnthropicClient
 
         return AnthropicClient()
-    raise ValueError(f"unknown LLM_PROVIDER: {LLM_PROVIDER!r}")
+    raise ValueError(f"unknown LLM provider: {llm.provider!r}")

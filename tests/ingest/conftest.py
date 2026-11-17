@@ -6,20 +6,26 @@ import pytest
 
 import ffassistant.ingest.index as index_module
 import ffassistant.ingest.poll as poll_module
-import ffassistant.ingest.store as store
+from tests.helpers import CFG, with_news_dir
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
 @pytest.fixture
-def feeds(monkeypatch, tmp_path):
+def cfg(tmp_path):
+    """The real config with news under tmp_path and two test feeds."""
+    ingest = CFG.ingest.model_copy(
+        update={"feeds": {k: f"https://{k}.test/feed" for k in ("rotowire", "generic")}}
+    )
+    return with_news_dir(tmp_path / "news").model_copy(update={"ingest": ingest})
+
+
+@pytest.fixture
+def feeds(monkeypatch, cfg):
     """Maps feed key -> fixture filename or Exception; fetch_feed serves them."""
     served: dict[str, str | Exception] = {}
-    monkeypatch.setattr(store, "ITEMS_PATH", tmp_path / "news" / "items.jsonl")
-    monkeypatch.setattr(store, "TAGS_PATH", tmp_path / "news" / "tags.jsonl")
     gazetteer = Gazetteer(players={"micah parsons": [("00-9", "GB")]}, teams={"Packers": "GB"})
     monkeypatch.setattr(index_module, "load_gazetteer", lambda season: gazetteer)
-    monkeypatch.setattr(poll_module, "FEEDS", {k: f"https://{k}.test/feed" for k in ("rotowire", "generic")})
 
     def fake_fetch(url):
         key = url.split("//")[1].split(".")[0]

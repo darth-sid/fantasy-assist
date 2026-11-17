@@ -1,11 +1,11 @@
 from datetime import datetime, timedelta, timezone
 
 import ffassistant.answering.sources.news as news_module
-import ffassistant.ingest.store as store_module
 from ffassistant.answering.models import ResolvedContext
 from ffassistant.answering.ranking import BM25Ranker
 from ffassistant.answering.sources.news import news
 from ffassistant.ingest.models import NewsItem, NewsTags
+from tests.helpers import CFG, with_news, with_news_dir
 
 CUTOFF = datetime(2026, 11, 15, 18, 0, tzinfo=timezone.utc)
 CTX = ResolvedContext(
@@ -42,11 +42,16 @@ def _tags(doc_id: str, player_ids: list[str] = (), teams: list[str] = ()) -> New
     return NewsTags(doc_id=doc_id, player_ids=list(player_ids), teams=list(teams))
 
 
-def _run(monkeypatch, items: list[NewsItem], tags: list[NewsTags], ranker: str = "recency"):
-    monkeypatch.setattr(news_module, "NEWS_RANKER", ranker)
-    monkeypatch.setattr(news_module, "iter_items", lambda: iter(items))
-    monkeypatch.setattr(news_module, "iter_tags", lambda: iter(tags))
-    return news(CTX, "ARI", CUTOFF)
+def _run(
+    monkeypatch,
+    items: list[NewsItem],
+    tags: list[NewsTags],
+    ranker: str = "recency",
+    **news_overrides,
+):
+    monkeypatch.setattr(news_module, "iter_items", lambda news_dir: iter(items))
+    monkeypatch.setattr(news_module, "iter_tags", lambda news_dir: iter(tags))
+    return news(CTX, "ARI", CUTOFF, with_news(ranker=ranker, **news_overrides))
 
 
 def _buckets(result) -> dict[str, list[str]]:
@@ -150,32 +155,29 @@ def test_ok_carries_cutoff_and_entry_fields(monkeypatch):
     )
 
 
-def test_missing_files_are_empty(monkeypatch, tmp_path):
-    monkeypatch.setattr(store_module, "ITEMS_PATH", tmp_path / "missing.jsonl")
-    monkeypatch.setattr(store_module, "TAGS_PATH", tmp_path / "missing-tags.jsonl")
-
-    result = news(CTX, "ARI", CUTOFF)
+def test_missing_files_are_empty(tmp_path):
+    result = news(CTX, "ARI", CUTOFF, with_news_dir(tmp_path / "missing"))
 
     assert result.status == "empty"
     assert result.source == "news"
 
 
 def test_error_status_when_read_raises(monkeypatch):
-    def _raise():
+    def _raise(news_dir):
         raise OSError("disk gone")
 
     monkeypatch.setattr(news_module, "iter_tags", _raise)
 
-    result = news(CTX, "ARI", CUTOFF)
+    result = news(CTX, "ARI", CUTOFF, CFG)
 
     assert result.status == "error"
     assert result.data is None
     assert "disk gone" in result.error
 
 
-def _bm25(monkeypatch, items: list[NewsItem], tags: list[NewsTags]):
-    monkeypatch.setattr(news_module, "NEWS_QUERY_TEAM", "cornerback injury")
-    return _run(monkeypatch, items, tags, ranker="bm25")
+def _bm25(monkeypatch, items: list[NewsItem], tags: list[NewsTags], **news_overrides):
+    news_overrides.setdefault("query_team", "cornerback injury")
+    return _run(monkeypatch, items, tags, ranker="bm25", **news_overrides)
 
 
 def _team_ids(result) -> list[str]:
@@ -189,7 +191,6 @@ def test_recency_ranker_scores_are_timestamps(monkeypatch):
 
 
 def test_bm25_orders_relevant_item_above_irrelevant(monkeypatch):
-    monkeypatch.setattr(news_module, "NEWS_TEAM_TOP_K", 1)
     items = [
         _item("uniforms", title="Rams unveil throwback uniforms", published=CUTOFF - timedelta(hours=1)),
         _item("cb", title="Rams cornerback ruled out with injury", published=CUTOFF - timedelta(days=3)),
@@ -197,7 +198,7 @@ def test_bm25_orders_relevant_item_above_irrelevant(monkeypatch):
     ]
     tags = [_tags(i.doc_id, teams=["LA"]) for i in items]
 
-    assert _team_ids(_bm25(monkeypatch, items, tags)) == ["cb"]
+    assert _team_ids(_bm25(monkeypatch, items, tags, team_top_k=1)) == ["cb"]
 
 
 def test_bm25_drops_zero_score_items(monkeypatch):
@@ -211,29 +212,27 @@ def test_bm25_drops_zero_score_items(monkeypatch):
 
 
 def test_bm25_ties_go_to_the_newer_item(monkeypatch):
-    monkeypatch.setattr(news_module, "NEWS_TEAM_TOP_K", 1)
     items = [
         _item("old", title="Rams cornerback hurt", published=CUTOFF - timedelta(days=3)),
         _item("new", title="Rams cornerback hurt", published=CUTOFF - timedelta(days=1)),
     ]
     tags = [_tags(i.doc_id, teams=["LA"]) for i in items]
 
-    assert _team_ids(_bm25(monkeypatch, items, tags)) == ["new"]
+    assert _team_ids(_bm25(monkeypatch, items, tags, team_top_k=1)) == ["new"]
 
 
 def test_bm25_term_weights_come_from_the_whole_window(monkeypatch):
-    monkeypatch.setattr(news_module, "NEWS_QUERY_TEAM", "injury")
     items = [
         _item("cb", title="Rams cornerback injury update"),
         _item("other", title="Rams practice notes"),
     ]
     tags = [_tags(i.doc_id, teams=["LA"]) for i in items]
-    alone = _run(monkeypatch, items, tags, ranker="bm25").data.team[0].score
+    alone = _bm25(monkeypatch, items, tags, query_team="injury").data.team[0].score
 
     # An item outside the bucket (a KC item) that also says "injury" lowers that term's weight.
     outside = _item("kc", title="Chiefs injury report")
-    with_outside = _run(
-        monkeypatch, [*items, outside], [*tags, _tags("kc", teams=["KC"])], ranker="bm25"
+    with_outside = _bm25(
+        monkeypatch, [*items, outside], [*tags, _tags("kc", teams=["KC"])], query_team="injury"
     )
 
     assert _team_ids(with_outside) == ["cb"]
@@ -267,16 +266,15 @@ def test_selected_items_render_newest_first(monkeypatch):
 
 
 def test_news_query_fills_placeholders():
-    query = news_module.news_query(CTX, "ARI", "team")
+    query = news_module.news_query(CTX, "ARI", "team", CFG.news)
 
     assert query.startswith("tight end role workload")
 
 
 def test_bm25_matches_stemmed_forms(monkeypatch):
-    monkeypatch.setattr(news_module, "NEWS_QUERY_TEAM", "injury")
     items = [_item("plural", title="Rams battling injuries")]
 
-    result = _run(monkeypatch, items, [_tags("plural", teams=["LA"])], ranker="bm25")
+    result = _bm25(monkeypatch, items, [_tags("plural", teams=["LA"])], query_team="injury")
 
     assert _team_ids(result) == ["plural"]
 

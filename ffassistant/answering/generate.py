@@ -13,7 +13,7 @@ from ffassistant.answering.sources.news import NewsEntry, news, news_query
 from ffassistant.answering.sources.recent_stats import recent_stats
 from ffassistant.answering.sources.schedule import ScheduleData, ScheduleWeek, schedule
 from ffassistant.clients.llm_client import SystemBlock, get_llm_client
-from ffassistant.config import ANSWER_MODEL, NEWS_RANKER
+from ffassistant.config import Config, NewsConfig
 from ffassistant.resolution.models import ValidatedRequest
 
 _SYSTEM_PROMPT = """Answer the user's fantasy football question using only the provided context.
@@ -59,7 +59,9 @@ def news_cutoff(sched: SourceResult[ScheduleData], week: int, now: datetime) -> 
     return min(now, datetime.fromisoformat(target.kickoff))
 
 
-def gather_inputs(validated: ValidatedRequest, now: datetime | None = None) -> list[PlayerInputs]:
+def gather_inputs(
+    validated: ValidatedRequest, cfg: Config, now: datetime | None = None
+) -> list[PlayerInputs]:
     now = now or datetime.now(timezone.utc)
     inputs = []
     for player in validated.players:
@@ -76,7 +78,7 @@ def gather_inputs(validated: ValidatedRequest, now: datetime | None = None) -> l
                 defense=defense(ctx),
                 injuries=injuries(ctx),
                 news=(
-                    news(ctx, _target_week(sched, ctx.week).opponent, cutoff)
+                    news(ctx, _target_week(sched, ctx.week).opponent, cutoff, cfg)
                     if cutoff is not None
                     else None
                 ),
@@ -100,8 +102,8 @@ def _citations(cited_doc_ids: list[str], players: list[PlayerInputs]) -> list[Ci
     ]
 
 
-def _ranking_lines(label: str, query: str, entries: list[NewsEntry]) -> list[str]:
-    lines = [f"{label} ({NEWS_RANKER}): {query}"]
+def _ranking_lines(label: str, ranker: str, query: str, entries: list[NewsEntry]) -> list[str]:
+    lines = [f"{label} ({ranker}): {query}"]
     for entry in sorted(entries, key=lambda e: e.score, reverse=True):
         lines.append(f"  {entry.score:.2f}  {entry.published_at[:10]}  {entry.title}")
     if not entries:
@@ -109,7 +111,7 @@ def _ranking_lines(label: str, query: str, entries: list[NewsEntry]) -> list[str
     return lines
 
 
-def _print_news_ranking(players: list[PlayerInputs]) -> None:
+def _print_news_ranking(players: list[PlayerInputs], news_cfg: NewsConfig) -> None:
     print("--- News ranking ---")
     for inputs in players:
         ctx, result = inputs.ctx, inputs.news
@@ -118,29 +120,32 @@ def _print_news_ranking(players: list[PlayerInputs]) -> None:
             print(f"news: {'not fetched' if result is None else result.status}")
             continue
         opponent = _target_week(inputs.schedule, ctx.week).opponent
-        team_query = news_query(ctx, opponent, "team")
-        opponent_query = news_query(ctx, opponent, "opponent")
-        lines = _ranking_lines(f"{ctx.team} team news", team_query, result.data.team)
-        lines += _ranking_lines(f"Opponent ({opponent}) news", opponent_query, result.data.opponent)
+        ranker = news_cfg.ranker
+        team_query = news_query(ctx, opponent, "team", news_cfg)
+        opponent_query = news_query(ctx, opponent, "opponent", news_cfg)
+        lines = _ranking_lines(f"{ctx.team} team news", ranker, team_query, result.data.team)
+        lines += _ranking_lines(
+            f"Opponent ({opponent}) news", ranker, opponent_query, result.data.opponent
+        )
         print("\n".join(lines))
     print("--------------------")
     print()
 
 
 def answer(
-    validated: ValidatedRequest, debug: bool = False, now: datetime | None = None
+    validated: ValidatedRequest, cfg: Config, debug: bool = False, now: datetime | None = None
 ) -> Answer:
-    players = gather_inputs(validated, now)
-    context = render_context(validated, players)
+    players = gather_inputs(validated, cfg, now)
+    context = render_context(validated, players, cfg)
     if debug:
-        _print_news_ranking(players)
+        _print_news_ranking(players, cfg.news)
         print("--- Answer context ---")
         print(context)
         print("----------------------")
         print()
-    client = get_llm_client()
+    client = get_llm_client(cfg.llm)
     generated = client.generate_structured(
-        model=ANSWER_MODEL,
+        model=cfg.llm.answer_model,
         system=[SystemBlock(text=_SYSTEM_PROMPT)],
         user_content=context,
         output_model=GeneratedAnswer,

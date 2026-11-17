@@ -1,9 +1,9 @@
 import ffassistant.resolution.extract as extract_module
 from ffassistant.clients.llm_client import StructuredResponse, TokenUsage
-from ffassistant.config import PARSER_MODEL, SEASON
 from ffassistant.resolution.extract import extract
 from ffassistant.resolution.models import ExtractedPlayer, ExtractedRequest
 from ffassistant.resolution.roster import RosterPlayer
+from tests.helpers import CFG
 
 CURRENT_WEEK = 11
 
@@ -38,8 +38,8 @@ def _run(monkeypatch, debug: bool = False) -> tuple[ExtractedRequest, dict]:
     calls = {}
 
     monkeypatch.setattr(extract_module, "load_fantasy_roster", lambda season: ROSTER)
-    monkeypatch.setattr(extract_module, "get_llm_client", lambda: FakeClient(calls))
-    return extract("CeeDee Lam this week?", CURRENT_WEEK, debug=debug), calls
+    monkeypatch.setattr(extract_module, "get_llm_client", lambda llm: FakeClient(calls))
+    return extract("CeeDee Lam this week?", CURRENT_WEEK, CFG, debug=debug), calls
 
 
 def test_returns_parsed_output(monkeypatch):
@@ -47,7 +47,7 @@ def test_returns_parsed_output(monkeypatch):
 
     assert result == PARSED
     assert calls["output_model"] is ExtractedRequest
-    assert calls["model"] == PARSER_MODEL
+    assert calls["model"] == CFG.llm.parser_model
     assert calls["user_content"] == "CeeDee Lam this week?"
 
 
@@ -55,7 +55,7 @@ def test_system_blocks_use_passed_in_current_week(monkeypatch):
     _, calls = _run(monkeypatch)
 
     text = "\n".join(block.text for block in calls["system"])
-    assert f"Season: {SEASON}" in text
+    assert f"Season: {CFG.season}" in text
     assert f"Current week: {CURRENT_WEEK}" in text
     assert f'"next week" = {CURRENT_WEEK + 1}' in text
 

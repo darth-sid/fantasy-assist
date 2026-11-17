@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import feedparser
 
 from ffassistant.clients.rss_client import fetch_feed
-from ffassistant.config import FEEDS
+from ffassistant.config import Config
 from ffassistant.ingest import store
 from ffassistant.ingest.index import index
 from ffassistant.ingest.models import NewsItem
@@ -63,7 +63,9 @@ def _build_item(source: str, entry, fetched_at: datetime) -> NewsItem | None:
     )
 
 
-def _poll_feed(source: str, url: str, seen_ids: set[str], fetched_at: datetime) -> tuple[int, int]:
+def _poll_feed(
+    cfg: Config, source: str, url: str, seen_ids: set[str], fetched_at: datetime
+) -> tuple[int, int]:
     parsed = feedparser.parse(fetch_feed(url))
     if not parsed.entries:
         log.warning("%s: feed returned no entries", source)
@@ -77,26 +79,27 @@ def _poll_feed(source: str, url: str, seen_ids: set[str], fetched_at: datetime) 
             continue
         seen_ids.add(item.doc_id)
         new_items.append(item)
-    store.append_items(new_items)
+    store.append_items(cfg.news_dir, new_items)
     return len(parsed.entries), len(new_items)
 
 
-def poll() -> int:
+def poll(cfg: Config) -> int:
     """Polls every feed once and returns the process exit code."""
-    seen_ids = store.load_doc_ids()
+    feeds = cfg.ingest.feeds
+    seen_ids = store.load_doc_ids(cfg.news_dir)
     fetched_at = datetime.now(timezone.utc)
     print(f"[{fetched_at.isoformat(timespec='seconds')}]")
     failures = 0
-    for source, url in FEEDS.items():
+    for source, url in feeds.items():
         try:
-            fetched, new = _poll_feed(source, url, seen_ids, fetched_at)
+            fetched, new = _poll_feed(cfg, source, url, seen_ids, fetched_at)
             print(f"{source}: {fetched} fetched, {new} new")
         except Exception as e:
             failures += 1
             print(f"{source}: error: {e}")
     try:
-        print(f"index: tagged {index()} items")
+        print(f"index: tagged {index(cfg)} items")
     except Exception as e:
         # Untagged items are picked up by the next successful catch-up.
         print(f"index: error: {e}")
-    return 1 if failures == len(FEEDS) else 0
+    return 1 if failures == len(feeds) else 0

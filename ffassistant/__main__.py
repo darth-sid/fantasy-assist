@@ -1,10 +1,13 @@
+import argparse
 import os
 import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 from ffassistant.answering.generate import answer
 from ffassistant.clients.nflreadpy_client import get_current_week
+from ffassistant.config import CONFIG_PATH, load_config
 from ffassistant.resolution.extract import extract
 from ffassistant.resolution.models import RequestValidationError
 from ffassistant.resolution.validate import validate
@@ -15,16 +18,22 @@ load_dotenv()
 REQUEST = "CeeDee Lamb or Justin Jefferson? Or maybe Ja'Marr Chase?"
 # -------------------------------------------------------------------------
 
-request = sys.argv[1] if len(sys.argv) > 1 else REQUEST
+parser = argparse.ArgumentParser(prog="python -m ffassistant")
+parser.add_argument("request", nargs="?", default=REQUEST, help="the question to answer")
+parser.add_argument("--config", type=Path, default=CONFIG_PATH, help="config file to use")
+args = parser.parse_args()
+
+request = args.request
 debug = os.getenv("DEBUG", "").lower() == "true"
+cfg = load_config(args.config)
 
 print(f"Request: {request}")
 print()
 
 current_week = get_current_week()
 try:
-    extracted = extract(request, current_week, debug=debug)
-    validated = validate(extracted, request, current_week)
+    extracted = extract(request, current_week, cfg, debug=debug)
+    validated = validate(extracted, request, current_week, cfg)
 except RequestValidationError as exc:
     print("Could not answer this request:")
     for error in exc.errors:
@@ -40,7 +49,7 @@ if debug:
     print("-------------------------")
     print()
 
-result = answer(validated, debug=debug)
+result = answer(validated, cfg, debug=debug)
 print(result.answer)
 if result.citations:
     print()

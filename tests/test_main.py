@@ -6,17 +6,18 @@ import ffassistant.clients.nflreadpy_client as nflreadpy_client
 import ffassistant.resolution.extract as extract_module
 import ffassistant.resolution.validate as validate_module
 from ffassistant.answering.models import Answer, Citation
+from ffassistant.config import CONFIG_PATH
 
 
 def _run_main(monkeypatch, argv: list[str], citations: list[Citation] | None = None) -> dict:
     seen = {}
 
-    def fake_extract(prompt, current_week, debug=False):
-        seen.update(prompt=prompt, extract_week=current_week)
+    def fake_extract(prompt, current_week, cfg, debug=False):
+        seen.update(prompt=prompt, extract_week=current_week, extract_cfg=cfg)
         return "extracted"
 
-    def fake_validate(extracted, raw_prompt, current_week):
-        seen.update(raw_prompt=raw_prompt, validate_week=current_week)
+    def fake_validate(extracted, raw_prompt, current_week, cfg):
+        seen.update(raw_prompt=raw_prompt, validate_week=current_week, validate_cfg=cfg)
         return "validated"
 
     monkeypatch.setattr(sys, "argv", argv)
@@ -25,11 +26,11 @@ def _run_main(monkeypatch, argv: list[str], citations: list[Citation] | None = N
     monkeypatch.setattr(nflreadpy_client, "get_current_week", lambda: 9)
     monkeypatch.setattr(extract_module, "extract", fake_extract)
     monkeypatch.setattr(validate_module, "validate", fake_validate)
-    monkeypatch.setattr(
-        generate_module,
-        "answer",
-        lambda validated, debug: Answer(answer="ok", citations=citations or []),
-    )
+    def fake_answer(validated, cfg, debug):
+        seen.update(answer_cfg=cfg)
+        return Answer(answer="ok", citations=citations or [])
+
+    monkeypatch.setattr(generate_module, "answer", fake_answer)
     module_globals = runpy.run_module("ffassistant.__main__", run_name="__main__")
     seen["REQUEST"] = module_globals["REQUEST"]
     return seen
@@ -53,6 +54,22 @@ def test_extract_and_validate_share_the_current_week(monkeypatch):
     seen = _run_main(monkeypatch, ["ffassistant", "Bijan?"])
 
     assert seen["extract_week"] == seen["validate_week"] == 9
+
+
+def test_config_flag_picks_the_config_file(monkeypatch, tmp_path):
+    variant = tmp_path / "variant.yaml"
+    variant.write_text(CONFIG_PATH.read_text().replace("ranker: bm25", "ranker: recency"))
+
+    seen = _run_main(monkeypatch, ["ffassistant", "--config", str(variant), "Bijan?"])
+
+    assert seen["prompt"] == "Bijan?"
+    assert seen["answer_cfg"].news.ranker == "recency"
+
+
+def test_config_is_loaded_once_and_passed_to_every_stage(monkeypatch):
+    seen = _run_main(monkeypatch, ["ffassistant", "Bijan?"])
+
+    assert seen["extract_cfg"] is seen["validate_cfg"] is seen["answer_cfg"]
 
 
 def test_prints_sources_for_citations(monkeypatch, capsys):

@@ -1,33 +1,65 @@
-SEASON = 2026  # pinned season; in production this comes from the calendar
-DEFAULT_SCORING_FORMAT = "PPR"  # fallback when a request doesn't specify one
-LLM_PROVIDER = "anthropic"
-PARSER_MODEL = "claude-haiku-5-5"
-ANSWER_MODEL = "claude-haiku-5-5"
+"""Typed settings loaded from config.yaml; loaded once at each entry point and passed down."""
 
-FEEDS = {
-    "rotowire": "https://www.rotowire.com/rss/news.php?sport=NFL",
-    "espn": "https://www.espn.com/espn/rss/nfl/news",
-}
-NEWS_DIR = "data/news"  # relative to the repo root
+from __future__ import annotations
 
-NEWS_TOP_K = 5  # player's own news
-NEWS_TEAM_TOP_K = 3
-NEWS_OPPONENT_TOP_K = 3
-NEWS_RANKER = "bm25"  # "recency" or "bm25"; team and opponent buckets only
-NEWS_QUERY_TEAM = (
-    "{position_words} role workload targets carries snaps teammate injury questionable out "
-    "returns depth chart starter"
-)
-NEWS_QUERY_OPPONENT = (
-    "{opponent} defense injury questionable out returns secondary cornerback safety linebacker pass rush "
-    "starter"
-)
-NEWS_POSITION_WORDS = {
-    "QB": "quarterback passing",
-    "RB": "running back rushing backfield",
-    "WR": "wide receiver receivers",
-    "TE": "tight end",
-    "K": "kicker",
-}
-NEWS_LOOKBACK_DAYS = 14
-NEWS_MAX_SUMMARY_CHARS = 500
+from pathlib import Path
+
+import yaml
+from pydantic import BaseModel, ConfigDict, field_validator
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CONFIG_PATH = REPO_ROOT / "config.yaml"
+
+
+class _Section(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class LLMConfig(_Section):
+    """Which provider and models the LLM touch points use."""
+
+    provider: str
+    parser_model: str
+    answer_model: str
+
+
+class IngestConfig(_Section):
+    """Feeds the collector polls, keyed by source name."""
+
+    feeds: dict[str, str]
+
+
+class NewsConfig(_Section):
+    """News retrieval knobs: caps, window, ranker, and query templates."""
+
+    top_k: int
+    team_top_k: int
+    opponent_top_k: int
+    lookback_days: int
+    max_summary_chars: int
+    ranker: str
+    query_team: str
+    query_opponent: str
+    position_words: dict[str, str]
+
+
+class Config(_Section):
+    """All settings; sections can be passed down on their own."""
+
+    season: int
+    default_scoring_format: str
+    news_dir: Path
+    llm: LLMConfig
+    ingest: IngestConfig
+    news: NewsConfig
+
+    @field_validator("news_dir")
+    @classmethod
+    def _from_repo_root(cls, path: Path) -> Path:
+        # Resolved against the repo root so cron/launchd runs find the same files from any cwd.
+        return REPO_ROOT / path
+
+
+def load_config(path: Path = CONFIG_PATH) -> Config:
+    """Reads and validates a config file; unknown or missing keys raise."""
+    return Config.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))

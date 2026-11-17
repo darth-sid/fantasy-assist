@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ffassistant.clients.llm_client import StructuredResponse, SystemBlock, get_llm_client
-from ffassistant.config import PARSER_MODEL, SEASON
+from ffassistant.config import Config
 from ffassistant.resolution.models import ExtractedRequest
 from ffassistant.resolution.roster import load_fantasy_roster, render_roster
 
@@ -42,18 +42,20 @@ def _print_debug(response: StructuredResponse[ExtractedRequest]) -> None:
     print()
 
 
-def extract(prompt: str, current_week: int, debug: bool = False) -> ExtractedRequest:
-    roster = load_fantasy_roster(SEASON)
+def extract(
+    prompt: str, current_week: int, cfg: Config, debug: bool = False
+) -> ExtractedRequest:
+    roster = load_fantasy_roster(cfg.season)
     instructions = _INSTRUCTIONS.format(
-        season=SEASON, current_week=current_week, next_week=current_week + 1
+        season=cfg.season, current_week=current_week, next_week=current_week + 1
     )
     system = [
         SystemBlock(text=instructions),
-        SystemBlock(text=f"Fantasy roster for {SEASON}:\n{render_roster(roster)}", cache=True),
+        SystemBlock(text=f"Fantasy roster for {cfg.season}:\n{render_roster(roster)}", cache=True),
     ]
-    client = get_llm_client()
+    client = get_llm_client(cfg.llm)
     response = client.generate_structured(
-        model=PARSER_MODEL,
+        model=cfg.llm.parser_model,
         system=system,
         user_content=prompt,
         output_model=ExtractedRequest,
