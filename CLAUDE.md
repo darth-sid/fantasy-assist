@@ -119,7 +119,8 @@ nothing from it.
   (a failure doesn't stop the others) fetches, parses with `feedparser`
   (malformed-but-has-entries -> warning and use them; no entries -> logged),
   builds `NewsItem`s, skips entries with no link and any `doc_id` already
-  stored or seen earlier in the poll, and appends. One status line per feed
+  stored or seen earlier in the poll, and appends. It first prints `[<fetched_at>]`
+  (ISO 8601 UTC, the same time stamped on the items), then one status line per feed
   (`rotowire: 5 fetched, 2 new` / `espn: error: <reason>`). Then it runs the
   index catch-up and prints `index: tagged N items`, or `index: error: <reason>`
   if it fails (the items stay; the next successful catch-up tags them). Exit 1
@@ -683,3 +684,5 @@ The **body is authoritative** (current state); the log is provenance.
   the roster status line already says the player is unavailable, and reserve
   players drop off the report, so "Not on the Week N injury report" read as
   healthy. Other non-ACT statuses keep the injury line.
+- 2026-11-17 — Each ingest run starts its output with `[<fetched_at>]` (ISO
+  8601 UTC) so `data/ingest.log` shows when each run happened.

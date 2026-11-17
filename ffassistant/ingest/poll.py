@@ -85,6 +85,7 @@ def poll() -> int:
     """Polls every feed once and returns the process exit code."""
     seen_ids = store.load_doc_ids()
     fetched_at = datetime.now(timezone.utc)
+    print(f"[{fetched_at.isoformat(timespec='seconds')}]")
     failures = 0
     for source, url in FEEDS.items():
         try:

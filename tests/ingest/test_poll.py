@@ -125,3 +125,11 @@ def test_gazetteer_failure_keeps_items_and_reports(feeds, monkeypatch, capsys):
     assert len(_items()) == 4
     assert list(store.iter_tags()) == []
     assert "index: error: roster down" in capsys.readouterr().out
+
+
+def test_run_starts_with_a_timestamp_line_matching_fetched_at(feeds, capsys):
+    poll_module.poll()
+
+    first_line = capsys.readouterr().out.splitlines()[0]
+    fetched_at = next(store.iter_items()).fetched_at
+    assert first_line == f"[{fetched_at}]"

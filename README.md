@@ -144,7 +144,7 @@ python -m ffassistant.ingest
 ```
 
 Each run polls every feed once, appends new items to `data/news/items.jsonl`
-(gitignored), prints one status line per feed, tags the new items (printing
+(gitignored), prints a `[<UTC timestamp>]` line and one status line per feed, tags the new items (printing
 `index: tagged N items`, or `index: error: ...` if the roster couldn't load), and exits (non-zero only if every
 feed failed). It does not loop; schedule it. RotoWire's feed holds only the last
 few updates, so poll often (every 15 minutes or so is safer than hourly).
