@@ -7,7 +7,7 @@ from ffassistant.clients.llm_client import LLMClient, StructuredResponse, System
 
 
 class AnthropicClient(LLMClient):
-    """LLMClient over the Anthropic SDK (messages.parse, temperature 0)."""
+    """LLMClient over the Anthropic SDK (messages.parse)."""
 
     def generate_structured[T: BaseModel](
         self,
@@ -20,7 +20,6 @@ class AnthropicClient(LLMClient):
         response = anthropic.Anthropic().messages.parse(
             model=model,
             max_tokens=max_tokens,
-            temperature=0,
             system=[_system_block(block) for block in system],
             messages=[{"role": "user", "content": user_content}],
             output_format=output_model,
