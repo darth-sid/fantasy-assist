@@ -128,6 +128,22 @@ behavior. Edit the value and rerun with `DEBUG=true` to compare: the `---
 News ranking ---` block shows which items each ranker picked and their scores.
 The player's own news is always newest first.
 
+## Comparing configs blind
+
+`evals/` holds offline evaluation tools. To compare how two configs retrieve
+news, sample a set of players for a week, then judge the two configs' results
+side by side without knowing which is which:
+
+```bash
+python -m evals.generate --week 11 -n 30 --seed 1 -o evals/runs/w11.jsonl  # 30 players, weighted toward productive ones
+python -m evals.compare evals/runs/w11.jsonl -a evals/configs/bm25.yaml -b evals/configs/recency.yaml -o evals/runs/w11-bm25-vs-recency.jsonl
+```
+
+For each player you see LEFT and RIGHT news and press ← or → for the better
+one, ↑ or ↓ for a tie, `q` to stop. Rerun the same command to pick up where you
+left off. The tally at the end says which config won. Variant configs are full
+copies of `config.yaml` in `evals/configs/`; `evals/runs/` is gitignored.
+
 ## Running the news collector
 
 News only appears in answers if the collector has been running: the answer

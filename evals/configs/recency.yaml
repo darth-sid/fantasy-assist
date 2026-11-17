@@ -1,0 +1,34 @@
+season: 2026  # pinned season; in production this comes from the calendar
+default_scoring_format: PPR  # fallback when a request doesn't specify one
+news_dir: data/news  # relative to the repo root
+
+llm:
+  provider: anthropic
+  parser_model: claude-haiku-5-5
+  answer_model: claude-haiku-5-5
+
+ingest:
+  feeds:
+    rotowire: https://www.rotowire.com/rss/news.php?sport=NFL
+    espn: https://www.espn.com/espn/rss/nfl/news
+
+news:
+  top_k: 5  # player's own news
+  team_top_k: 3
+  opponent_top_k: 3
+  lookback_days: 14
+  max_summary_chars: 500
+  ranker: recency  # "recency" or "bm25"; team and opponent buckets only
+  # Placeholders: {player}, {position_words}, {team}, {opponent}
+  query_team: >-
+    {position_words} role workload targets carries snaps teammate injury questionable out
+    returns depth chart starter
+  query_opponent: >-
+    {opponent} defense injury questionable out returns secondary cornerback safety linebacker
+    pass rush starter
+  position_words:
+    QB: quarterback passing
+    RB: running back rushing backfield
+    WR: wide receiver receivers
+    TE: tight end
+    K: kicker

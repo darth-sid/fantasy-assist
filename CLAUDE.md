@@ -394,6 +394,42 @@ disappears.
 
 Working mode: **Build** — Sid designs, Claude implements to spec.
 
+### Evals
+
+`evals/` is a top-level package beside `ffassistant/` for offline evaluation
+(`python -m evals.<tool>`). It may import anything in `ffassistant`;
+`ffassistant` never imports `evals`. Records live in `evals/models.py`
+(`EvalSample`: `id`, `season`, `week`, `gsis_id`, `full_name`, `position`,
+one player for one week; `Judgment`: `sample_id`, `a_config`, `b_config`, `left` (`a` / `b`, None when identical), `choice`
+(`left` / `right` / `tie` / `identical`), `winner` (`a` / `b` / `tie`)).
+Variant configs are full `config.yaml` copies in `evals/configs/`
+(`bm25.yaml`, `recency.yaml`); generated files go in gitignored
+`evals/runs/`. Tests are in `tests/evals/`.
+
+- `evals/generate.py` (`python -m evals.generate --week W [-n 30] [--seed 0]
+  [--min-ppg 5.0] [--config path] -o samples.jsonl`): samples players, not
+  prompts, since retrieval never sees the question text. Eligible players are the
+  fantasy roster's `ACT` players whose team plays in week `W`
+  (`teams_playing`, so no byes), weighted by the square of their PPR points
+  per game in REG weeks before `W` (`player_weights`); players under
+  `--min-ppg` are never drawn. `sample_players` draws `n` distinct players by
+  weight without replacement (more than are eligible raises). Same seed, same
+  samples.
+- `evals/compare.py` (`python -m evals.compare samples.jsonl -a A.yaml -b
+  B.yaml -o judgments.jsonl`): blind A/B of news retrieval, one judgment per
+  sample. `Comparison(cfg_a, cfg_b, a_label, b_label, read_key, now, rng).run(
+  samples, out_path)` builds each player's context and schedule, cutoff =
+  `news_cutoff(schedule, week, now)` (players on a bye or with no schedule are
+  skipped), and runs `news()` under both configs. Identical selections in
+  every bucket are recorded as `identical` without asking. Otherwise A and B
+  go randomly to LEFT / RIGHT, both sides' player / team / opponent news are
+  printed (no config names on screen), and one keypress decides: ← left,
+  → right, ↑ / ↓ tie, `q` quit (other keys ignored). Each judgment is appended
+  as it's made; rerunning on the same output skips judged samples, and an
+  output file holding other configs' judgments is refused, as is a season
+  mismatch between samples and configs. At the end it prints the A wins, B
+  wins, ties, and identical counts with the config paths.
+
 ## LLM usage
 
 Two LLM touch points, both via `client = get_llm_client(cfg.llm)` then
@@ -737,3 +773,16 @@ The **body is authoritative** (current state); the log is provenance.
 - 2026-11-17 — Every entry point (`python -m ffassistant`, `ffassistant.ingest`,
   `ffassistant.ingest.index`) takes `--config path` (default: the repo-root
   `config.yaml`); `__main__.py` parses its arguments with argparse.
+- 2026-11-17 — Blind A/B eval tooling in a top-level `evals/` package (imports
+  `ffassistant`, never imported by it). `evals.generate` builds a seeded prompt
+  set without an LLM: `ACT` players on teams playing that week (no byes),
+  weighted by PPR points per game before a fixed week, squared, with a
+  `--min-ppg` floor (default 5.0) below which players are dropped, templates `X or Y?` (any positions) / `Should I start X?` / `How
+  is X gonna do?`. `evals.compare` runs two full config files (`-a` / `-b`)
+  per player and asks for blind left / right / tie judgments with the arrow
+  keys; identical retrievals auto-tie; judgments append to a resumable JSONL.
+- 2026-11-17 — `evals.generate` samples players, not prompt text: retrieval
+  never sees the question, and answer-level eval is too noisy to be worth
+  keeping text for. `n` distinct players per week (`EvalSample`), weighted
+  without replacement; `Judgment` keys on `sample_id`. Supersedes the prompt
+  templates in the earlier evals entry.

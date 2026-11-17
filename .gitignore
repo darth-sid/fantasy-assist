@@ -4,3 +4,4 @@ PROMPT.md
 .env
 
 data/
+evals/runs/
