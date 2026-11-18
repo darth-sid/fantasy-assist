@@ -1,8 +1,16 @@
+from datetime import datetime, timezone
+
 import polars as pl
 
 import ffassistant.answering.sources.schedule as schedule_module
-from ffassistant.answering.models import ResolvedContext
-from ffassistant.answering.sources.schedule import ScheduleWeek, schedule
+from ffassistant.answering.models import ResolvedContext, SourceResult
+from ffassistant.answering.sources.schedule import (
+    ScheduleData,
+    ScheduleWeek,
+    news_cutoff,
+    schedule,
+    target_week,
+)
 
 CTX = ResolvedContext(
     player_id="00-0036322",
@@ -141,3 +149,44 @@ def test_error_status_when_fetch_raises(monkeypatch):
     assert result.data is None
     assert result.error is not None
     assert "network down" in result.error
+
+
+NOW = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+
+
+def _schedule(kickoff: str | None, opponent: str | None = "IND") -> SourceResult[ScheduleData]:
+    byes = [
+        ScheduleWeek(week=w, opponent=None, home=None, played=False, kickoff=None)
+        for w in range(1, 7)
+    ]
+    target = ScheduleWeek(week=7, opponent=opponent, home=True, played=False, kickoff=kickoff)
+    return SourceResult(
+        source="schedule", status="ok", as_of="Week 7", data=ScheduleData(team="DAL", weeks=[*byes, target])
+    )
+
+
+def test_target_week_finds_the_week_or_none_when_schedule_failed():
+    failed = SourceResult(source="schedule", status="error", as_of="Week 7", error="boom")
+
+    assert target_week(_schedule(None), 7).opponent == "IND"
+    assert target_week(failed, 7) is None
+
+
+def test_cutoff_is_now_before_kickoff():
+    assert news_cutoff(_schedule("2026-10-25T17:00:00+00:00"), 7, NOW) == NOW
+
+
+def test_cutoff_is_kickoff_after_kickoff():
+    kickoff = datetime(2026, 10, 18, 17, 0, tzinfo=timezone.utc)
+
+    assert news_cutoff(_schedule(kickoff.isoformat()), 7, NOW) == kickoff
+
+
+def test_no_cutoff_on_bye():
+    assert news_cutoff(_schedule(None, opponent=None), 7, NOW) is None
+
+
+def test_no_cutoff_when_schedule_fails():
+    failed = SourceResult(source="schedule", status="error", as_of="Week 7", error="boom")
+
+    assert news_cutoff(failed, 7, NOW) is None

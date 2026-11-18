@@ -23,3 +23,14 @@ def sign_test(wins: int, losses: int) -> float:
         return 1.0
     tail = sum(math.comb(n, i) for i in range(min(wins, losses) + 1)) / 2**n
     return min(1.0, 2 * tail)
+
+
+def win_rate_line(a: int, b: int) -> str:
+    """A's win rate over decisive judgments with a Wilson 95% CI and sign test p."""
+    if a + b == 0:
+        return "  no decisive judgments yet"
+    low, high = wilson_interval(a, a + b)
+    return (
+        f"  A win rate excluding ties: {a / (a + b):.0%} of {a + b} "
+        f"(95% CI {low:.0%} to {high:.0%}), sign test p = {sign_test(a, b):.3f}"
+    )

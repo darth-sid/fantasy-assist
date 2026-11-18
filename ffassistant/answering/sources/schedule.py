@@ -82,3 +82,18 @@ def schedule(ctx: ResolvedContext) -> SourceResult[ScheduleData]:
             as_of=as_of,
             error=f"{type(exc).__name__}: {exc}",
         )
+
+
+def target_week(sched: SourceResult[ScheduleData], week: int) -> ScheduleWeek | None:
+    """The given week's entry, or None when the schedule didn't load."""
+    if sched.status != "ok":
+        return None
+    return next(w for w in sched.data.weeks if w.week == week)
+
+
+def news_cutoff(sched: SourceResult[ScheduleData], week: int, now: datetime) -> datetime | None:
+    """min(now, the week's kickoff); None on a bye or when the schedule didn't load."""
+    target = target_week(sched, week)
+    if target is None or target.kickoff is None:
+        return None
+    return min(now, datetime.fromisoformat(target.kickoff))

@@ -5,14 +5,14 @@ from datetime import datetime, timezone
 from pydantic import BaseModel
 
 from ffassistant.answering.context import render_context
-from ffassistant.answering.models import Answer, Citation, PlayerInputs, SourceResult
+from ffassistant.answering.models import Answer, Citation, PlayerInputs
 from ffassistant.answering.player_context import player_context
 from ffassistant.answering.sources.defense import defense
 from ffassistant.answering.sources.injuries import injuries
 from ffassistant.answering.sources.news import NewsEntry, news, news_query
 from ffassistant.answering.sources.recent_stats import recent_stats
-from ffassistant.answering.sources.schedule import ScheduleData, ScheduleWeek, schedule
-from ffassistant.clients.llm_client import SystemBlock, get_llm_client
+from ffassistant.answering.sources.schedule import news_cutoff, schedule, target_week
+from ffassistant.clients.llm_client import QueryRequest, SystemBlock, get_llm_client
 from ffassistant.config import Config, NewsConfig
 from ffassistant.resolution.models import ValidatedRequest
 
@@ -46,19 +46,6 @@ class GeneratedAnswer(BaseModel):
     cited_doc_ids: list[str]
 
 
-def _target_week(sched: SourceResult[ScheduleData], week: int) -> ScheduleWeek | None:
-    if sched.status != "ok":
-        return None
-    return next(w for w in sched.data.weeks if w.week == week)
-
-
-def news_cutoff(sched: SourceResult[ScheduleData], week: int, now: datetime) -> datetime | None:
-    target = _target_week(sched, week)
-    if target is None or target.kickoff is None:
-        return None
-    return min(now, datetime.fromisoformat(target.kickoff))
-
-
 def gather_inputs(
     validated: ValidatedRequest, cfg: Config, now: datetime | None = None
 ) -> list[PlayerInputs]:
@@ -78,7 +65,7 @@ def gather_inputs(
                 defense=defense(ctx),
                 injuries=injuries(ctx),
                 news=(
-                    news(ctx, _target_week(sched, ctx.week).opponent, cutoff, cfg)
+                    news(ctx, target_week(sched, ctx.week).opponent, cutoff, cfg)
                     if cutoff is not None
                     else None
                 ),
@@ -119,7 +106,7 @@ def _print_news_ranking(players: list[PlayerInputs], news_cfg: NewsConfig) -> No
         if result is None or result.status != "ok":
             print(f"news: {'not fetched' if result is None else result.status}")
             continue
-        opponent = _target_week(inputs.schedule, ctx.week).opponent
+        opponent = target_week(inputs.schedule, ctx.week).opponent
         ranker = news_cfg.ranker
         team_query = news_query(ctx, opponent, "team", news_cfg)
         opponent_query = news_query(ctx, opponent, "opponent", news_cfg)
@@ -144,12 +131,14 @@ def answer(
         print("----------------------")
         print()
     client = get_llm_client(cfg.llm)
-    generated = client.generate_structured(
-        model=cfg.llm.answer_model,
-        system=[SystemBlock(text=_SYSTEM_PROMPT)],
-        user_content=context,
-        output_model=GeneratedAnswer,
-        max_tokens=2048,
+    generated = client.query(
+        QueryRequest(
+            model=cfg.llm.answer_model,
+            system=[SystemBlock(text=_SYSTEM_PROMPT)],
+            user_content=context,
+            output_model=GeneratedAnswer,
+            max_tokens=2048,
+        )
     ).parsed
     return Answer(
         answer=generated.answer, citations=_citations(generated.cited_doc_ids, players)

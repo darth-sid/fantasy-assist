@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -21,6 +23,7 @@ class LLMConfig(_Section):
     provider: str
     parser_model: str
     answer_model: str
+    judge_model: str
 
 
 class IngestConfig(_Section):
@@ -60,6 +63,23 @@ class Config(_Section):
         return REPO_ROOT / path
 
 
-def load_config(path: Path = CONFIG_PATH) -> Config:
-    """Reads and validates a config file; unknown or missing keys raise."""
-    return Config.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+def _read(path: Path) -> dict[str, Any]:
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def load_config(path: Path = CONFIG_PATH, overrides: Sequence[Path] = ()) -> Config:
+    """Reads a config, deep-merges each override file over it in order, and validates the result."""
+    data = _read(path)
+    for override in overrides:
+        data = _merge(data, _read(override))
+    return Config.model_validate(data)

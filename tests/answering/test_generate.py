@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 import ffassistant.answering.generate as generate_module
-from ffassistant.answering.generate import GeneratedAnswer, answer, gather_inputs, news_cutoff
+from ffassistant.answering.generate import GeneratedAnswer, answer, gather_inputs
 from ffassistant.answering.models import (
     Answer,
     Citation,
@@ -46,7 +46,16 @@ NOW = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
 
 class FakeClient:
     def __init__(self, generate):
-        self.generate_structured = generate
+        self.generate = generate
+
+    def query(self, request):
+        return self.generate(
+            model=request.model,
+            system=request.system,
+            user_content=request.user_content,
+            output_model=request.output_model,
+            max_tokens=request.max_tokens,
+        )
 
 
 def _schedule(kickoff: str | None, opponent: str | None = "IND") -> SourceResult[ScheduleData]:
@@ -61,26 +70,6 @@ def _schedule(kickoff: str | None, opponent: str | None = "IND") -> SourceResult
         as_of="Week 7",
         data=ScheduleData(team="DAL", weeks=[*byes, target]),
     )
-
-
-def test_cutoff_is_now_before_kickoff():
-    assert news_cutoff(_schedule("2026-10-25T17:00:00+00:00"), 7, NOW) == NOW
-
-
-def test_cutoff_is_kickoff_after_kickoff():
-    kickoff = datetime(2026, 10, 18, 17, 0, tzinfo=timezone.utc)
-
-    assert news_cutoff(_schedule(kickoff.isoformat()), 7, NOW) == kickoff
-
-
-def test_no_cutoff_on_bye():
-    assert news_cutoff(_schedule(None, opponent=None), 7, NOW) is None
-
-
-def test_no_cutoff_when_schedule_fails():
-    failed = SourceResult(source="schedule", status="error", as_of="Week 7", error="boom")
-
-    assert news_cutoff(failed, 7, NOW) is None
 
 
 def _stub_sources(monkeypatch, sched, news_calls: list) -> None:

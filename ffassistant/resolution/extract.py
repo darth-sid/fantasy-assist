@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from ffassistant.clients.llm_client import StructuredResponse, SystemBlock, get_llm_client
+from ffassistant.clients.llm_client import (
+    QueryRequest,
+    StructuredResponse,
+    SystemBlock,
+    get_llm_client,
+)
 from ffassistant.config import Config
 from ffassistant.resolution.models import ExtractedRequest
 from ffassistant.resolution.roster import load_fantasy_roster, render_roster
@@ -54,12 +59,14 @@ def extract(
         SystemBlock(text=f"Fantasy roster for {cfg.season}:\n{render_roster(roster)}", cache=True),
     ]
     client = get_llm_client(cfg.llm)
-    response = client.generate_structured(
-        model=cfg.llm.parser_model,
-        system=system,
-        user_content=prompt,
-        output_model=ExtractedRequest,
-        max_tokens=1024,
+    response = client.query(
+        QueryRequest(
+            model=cfg.llm.parser_model,
+            system=system,
+            user_content=prompt,
+            output_model=ExtractedRequest,
+            max_tokens=1024,
+        )
     )
     if debug:
         _print_debug(response)

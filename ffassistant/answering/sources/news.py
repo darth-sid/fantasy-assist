@@ -38,7 +38,8 @@ def _clean_summary(summary: str, max_chars: int) -> str:
     return summary
 
 
-def _entry(item: NewsItem, max_chars: int, score: float | None = None) -> NewsEntry:
+def news_entry(item: NewsItem, max_chars: int, score: float | None = None) -> NewsEntry:
+    """The rendered form of a stored item: cleaned, truncated summary plus the ranker score."""
     return NewsEntry(
         doc_id=item.doc_id,
         source=item.source,
@@ -71,7 +72,7 @@ def _rank_bucket(
     by_id = {item.doc_id: item for item in candidates}
     candidate_docs = [doc for doc in ranker.corpus if doc.doc_id in by_id]
     ranked = ranker.rank(query, candidate_docs)[:top_k]
-    selected = [_entry(by_id[doc.doc_id], max_chars, score) for doc, score in ranked]
+    selected = [news_entry(by_id[doc.doc_id], max_chars, score) for doc, score in ranked]
     return sorted(selected, key=lambda entry: entry.published_at, reverse=True)
 
 
@@ -132,7 +133,7 @@ def news(
             as_of=as_of,
             data=NewsData(
                 cutoff=as_of,
-                player=[_entry(item, max_chars) for item in buckets["player"][: news_cfg.top_k]],
+                player=[news_entry(item, max_chars) for item in buckets["player"][: news_cfg.top_k]],
                 team=_rank_bucket(
                     ranker,
                     news_query(ctx, opponent, "team", news_cfg),

@@ -6,6 +6,7 @@ llm:
   provider: anthropic
   parser_model: claude-haiku-5-5
   answer_model: claude-haiku-5-5
+  judge_model: claude-haiku-5-5  # evals.llm_judge
 
 ingest:
   feeds:

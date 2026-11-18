@@ -92,7 +92,7 @@ All code lives in the `ffassistant/` package:
 - `clients/` — raw third-party access, so the stages never have to know how a
   dependency is actually called. `nflreadpy_client.py` (nflreadpy),
   `rss_client.py` (feed HTTP), and `llm_client.py`, a provider-neutral `LLMClient`
-  interface with one structured-output call (`generate_structured`), picked by
+  interface with one structured-output call (`query`, plus `query_many` / `query_batch` for many at once), picked by
   the config's `llm.provider` via `get_llm_client()` and implemented for Anthropic in
   `anthropic_client.py`. Prompts and output schemas live in the stages.
 - `config.py` — the typed `Config` (sections `llm`, `ingest`, `news`) and
@@ -136,16 +136,37 @@ side by side without knowing which is which:
 
 ```bash
 python -m evals.generate --week 11 -n 30 --seed 1 -o evals/runs/w11.jsonl  # 30 players, weighted toward productive ones
-python -m evals.compare evals/runs/w11.jsonl -a evals/configs/bm25.yaml -b evals/configs/recency.yaml -o evals/runs/w11-bm25-vs-recency.jsonl
+python -m evals.compare evals/runs/w11.jsonl -a evals/configs/bm25.yaml -b evals/configs/recency.yaml -o evals/runs/w11-bm25-vs-recency
 ```
 
-For each player you see LEFT and RIGHT news and press ← or → for the better
-one, ↑ or ↓ for a tie, `q` to stop. Rerun the same command to pick up where you
+For each player you see two flat lists of news, FIRST and SECOND, and press ← for
+first or → for second, ↑ or ↓ for a tie, `q` to stop. Rerun the same command to pick up where you
 left off: each sample set is frozen at the time it was generated, so news
 collected later never changes what you judge. The tally at the end gives the
 win counts and the win rate excluding ties with a 95% interval and a sign test
-p-value; each judgment line also records the doc_ids both sides showed. Variant configs are full
-copies of `config.yaml` in `evals/configs/`; `evals/runs/` is gitignored.
+p-value; each judgment line also records the doc_ids both sides showed.
+
+`-a` and `-b` are override files merged over the base config (`--config`,
+default `config.yaml`): `evals/configs/bm25.yaml` is just `news: {ranker:
+bm25}`. To test a new variant, write a small override with only what you
+change. Each `-o` is a run directory: `meta.json` records what it compares
+(once), `judgments.jsonl` the judgments. `evals/runs/` is gitignored.
+
+### Letting an LLM judge
+
+```bash
+python -m evals.llm_judge evals/runs/w11.jsonl -a evals/configs/bm25.yaml -b evals/configs/recency.yaml -o evals/runs/w11-llm
+python -m evals.agreement evals/runs/w11-llm -n 20  # optional
+```
+
+`llm_judge` sends every pair to `llm.judge_model` twice, once with each config
+shown first, as a Message Batch (50% cheaper, can take minutes; `--sync` makes
+concurrent calls instead). If the two orders disagree, the pair is
+inconsistent and counts as a tie; the summary reports the inconsistency rate
+alongside the win rate. If a batch run is interrupted, rerun the same command
+to resume it; errored pairs are retried. `agreement` then shows you a random
+`n` of those pairs blind, exactly as the judge saw them, and reports how often
+you agree with it.
 
 ## Running the news collector
 

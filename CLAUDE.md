@@ -47,20 +47,34 @@ that owns it.
 `clients/nflreadpy_client.py` holds all raw nflreadpy access, including
 `get_current_week()` (nflreadpy's default schedule-based lookup, never
 `use_date=True`). LLM access goes through a provider-neutral interface in
-`clients/llm_client.py`: the `LLMClient` ABC with one method,
-`generate_structured(model, system, user_content, output_model, max_tokens) ->
-StructuredResponse[T]`, plus the neutral types it speaks: `SystemBlock`
+`clients/llm_client.py`: the `LLMClient` ABC. Every call is a `QueryRequest`
+(`model`, `system`, `user_content`, `output_model`, `max_tokens`), the one
+request type for single and bulk calls. One abstract method,
+`query(request) -> StructuredResponse[T]` (raises when the reply has no
+parsed output, e.g. cut off at `max_tokens`), plus two for many requests at once, both returning
+results in request order with failures as `QueryError(message)` instead of
+raising: `query_many(requests, workers=8)` (concurrent `query` calls on a
+thread pool) and `query_batch(requests, job_file=None)` (the provider's
+batch API where it has one, blocking until done; defaults to `query_many`).
+The other neutral types it speaks: `SystemBlock`
 (`text`, `cache: bool`, a prompt-caching hint providers may ignore),
 `TokenUsage` (`input_tokens`, `output_tokens`, `cache_write_tokens`,
 `cache_read_tokens`), and `StructuredResponse` (`parsed: T`, `usage:
 TokenUsage`). `get_llm_client(llm)` returns the implementation named by
 `llm.provider` (`get_llm_client(cfg.llm)`; anything but `"anthropic"` raises
-`ValueError`); the stages do `client = get_llm_client(cfg.llm)` then `client.generate_structured(...)`,
+`ValueError`); the stages do `client = get_llm_client(cfg.llm)` then `client.query(...)`,
 and tests monkeypatch
 `get_llm_client`. `clients/anthropic_client.py`'s `AnthropicClient` is raw SDK
 access only (`messages.parse()`, no sampling parameters): it turns `SystemBlock`s into
 text blocks (`cache=True` -> `cache_control` ephemeral) and the SDK usage into
-`TokenUsage`. Prompts and Pydantic output schemas live in the stage modules that
+`TokenUsage`. Its `query_batch` uses Message Batches: one request per
+`QueryRequest` (`custom_id` = index, structured output via
+`output_config.format` with `anthropic.transform_schema(output_model)`),
+polls every 30 s until `ended`, and validates each result's text against
+`output_model`; errored, expired, or unparseable results become `QueryError`.
+It writes the batch id to `job_file` before polling and resumes that batch
+when the file exists, deleting it once results are in. The SDK client is
+created on first use. Prompts and Pydantic output schemas live in the stage modules that
 use them. Nothing else imports either library.
 
 `__main__.py` is orchestration only: one natural-language request ->
@@ -85,12 +99,15 @@ highest score first; `news: not fetched` / `news: <status>` otherwise), then
 the rendered context it already built, before the LLM call.
 
 **Config.** Settings live in `config.yaml` at the repo root. `config.py` holds
-the typed, frozen Pydantic `Config` and `load_config(path=CONFIG_PATH)`, which
-reads and validates it (unknown or missing keys raise, naming the field).
+the typed, frozen Pydantic `Config` and `load_config(path=CONFIG_PATH,
+overrides=())`, which reads it, deep-merges each override file over it in
+order (nested sections merge, other values replace), and validates the result
+(unknown or missing keys raise, naming the field).
 `Config`: `season` (2026), `default_scoring_format` (`PPR`), `news_dir`
 (`data/news`, resolved against the repo root so cwd doesn't matter under
 cron), and three sections: `llm` (`LLMConfig`: `provider` `anthropic`,
-`parser_model` / `answer_model` both `claude-haiku-5-5`), `ingest`
+`parser_model` / `answer_model` / `judge_model` all `claude-haiku-5-5`;
+`judge_model` is used only by `evals.llm_judge`), `ingest`
 (`IngestConfig`: `feeds`, source name -> URL), and `news` (`NewsConfig`:
 `top_k` 5 (player bucket), `team_top_k` 3, `opponent_top_k` 3,
 `lookback_days` 14, `max_summary_chars` 500, `ranker` `bm25` or `recency`, the
@@ -258,9 +275,9 @@ earliest row); `player_name` and `position` come from the `ValidPlayer`.
 is the stage entry point. `gather_inputs(validated, now=None)` builds a
 `PlayerInputs` per valid player (`now` defaults to the current UTC time and is
 injectable for tests); `render_context` turns them into the text context, sent
-via `generate_structured` (`llm.answer_model`) with a `GeneratedAnswer` output
+via `query` (`llm.answer_model`) with a `GeneratedAnswer` output
 schema (`answer`, `cited_doc_ids`). **News cutoff:** `news_cutoff(schedule,
-week, now)` = `min(now, kickoff of the target-week game)`, so upcoming weeks use
+week, now)` (in `sources/schedule.py`) = `min(now, kickoff of the target-week game)`, so upcoming weeks use
 now and past weeks use that game's kickoff; it is None (news not fetched) when
 the schedule isn't `ok` (no safe cutoff) or the target week is a BYE. After
 generation, `cited_doc_ids` not among the rendered news items are dropped
@@ -282,7 +299,10 @@ the `SourceResult` envelope (`source`, `status`, `as_of`, `data`, `error`).
   season's REG games involving `ctx.team`. `opponent=None` means bye; `played`
   comes from `result` being non-null; `kickoff` is ISO 8601 UTC from `gameday` +
   `gametime` read as `America/New_York` local time (midnight Eastern when
-  `gametime` is null), None on a bye. Known simplification: it uses the player's team as of
+  `gametime` is null), None on a bye. Also `target_week(schedule, week)` (that
+  week's `ScheduleWeek`, None when the schedule isn't `ok`) and `news_cutoff`
+  (above), pure helpers over a loaded schedule that `generate.py` and
+  `evals/pairs.py` both use. Known simplification: it uses the player's team as of
   the target week, so a player traded mid-season gets past weeks matched against
   the wrong team's schedule.
 - `defense.py` (`DefenseData`: `position`, `rows: list[DefenseRow]`): the league
@@ -400,17 +420,72 @@ Working mode: **Build** — Sid designs, Claude implements to spec.
 
 `evals/` is a top-level package beside `ffassistant/` for offline evaluation
 (`python -m evals.<tool>`). It may import anything in `ffassistant`;
-`ffassistant` never imports `evals`. Records live in `evals/models.py`
-(`EvalSample`: `id`, `season`, `week`, `as_of` (generation time, ISO 8601
-UTC), `gsis_id`, `full_name`, `position`, one player for one week;
-`Judgment`: `sample_id`, `a_config`, `b_config`, `cutoff`, `a` / `b`
-(`Retrieved`: `status`, `error`, and the selected `player` / `team` /
-`opponent` doc_ids, so judgments stay inspectable if the local corpus
-changes), `left` (`a` / `b`, None when identical), `choice`
-(`left` / `right` / `tie` / `identical`), `winner` (`a` / `b` / `tie`)).
-Variant configs are full `config.yaml` copies in `evals/configs/`
-(`bm25.yaml`, `recency.yaml`); generated files go in gitignored
-`evals/runs/`. Tests are in `tests/evals/`.
+`ffassistant` never imports `evals`. Tests are in `tests/evals/` (shared fakes
+in `tests/evals/helpers.py`). The tools comparing configs take a base
+`--config` (default: the repo `config.yaml`) plus `-a A.yaml -b B.yaml`
+override files merged over it. Override files live in `evals/configs/`
+(`bm25.yaml`, `recency.yaml`, each just `news: {ranker: ...}`); generated
+files go in gitignored `evals/runs/`.
+
+**Records** (`evals/models.py`) store only what isn't derivable. Outcomes are
+`a` / `b` / `tie` (`Outcome`). A pair is shown FIRST then SECOND, with which
+config goes first random and not stored.
+- `EvalSample`: `season`, `week`, `as_of` (generation time, ISO 8601 UTC),
+  `gsis_id` (unique within a samples file, so it keys every judgment),
+  `full_name`, `position`.
+- `RunMeta`: `samples` (the samples file path), `a_config`, `b_config` (the
+  override paths), `judge_model` (None for human runs). Stored once per run
+  directory, not on each judgment.
+- `Judgment`: `gsis_id`, `cutoff`, `a`, `b` (each side's doc_ids, one flat
+  list in retrieved order), `winner`. Identical sides are recorded as a tie
+  without being judged; `judgment.identical` (`a == b`) derives it.
+- `LLMJudgment(Judgment)`: adds only `reason`. One record per pair: when both
+  orders map to the same winner, that winner with the A-first order's reason;
+  when they disagree, `tie` with reason `"inconsistent"` (`is_inconsistent`);
+  identical pairs have no reason.
+- `AgreementJudgment`: `gsis_id`, `human`, `llm` (both outcomes; the LLM's
+  inconsistent is already a tie).
+
+**Storage** (`evals/run_store.py`) owns every eval file path; nothing else
+names a file. `load_samples(path)` / `write_samples(path, samples)` for
+samples files. `RunStore` is one run directory (the tools' `-o`):
+`RunStore.create(run_dir, meta)` starts a run, writing `meta.json`, or
+resumes one, refusing if its `RunMeta` differs (other configs, samples, or
+judge model); `RunStore.open(run_dir)` opens an existing run. Then
+`store.meta`, `store.samples()` (the samples file `meta.json` points at),
+`store.judgments(model)` / `store.append_judgments(records)`
+(`judgments.jsonl`, appended and flushed per record), `store.agreements()` /
+`store.append_agreements(records)` (`agreement.jsonl`), and
+`store.batch_file` (where a provider batch records its id while in flight).
+
+**Module layering** (no tool imports another tool): `models`, `stats` (also
+`win_rate_line`), `run_store` (models only), `cli` (`add_config_args`,
+`load_configs` for `--config` + `-a` / `-b`), `pairs` (models +
+`ffassistant`), `tui` (models, pairs), then the tools `generate`, `compare`,
+`llm_judge`, `agreement`.
+
+`evals/pairs.py` is what every judging tool shares, so a human and the LLM see
+the same text. **Eval never sees news buckets**: a side is one flat list of
+`NewsEntry`s, the player, team, and opponent buckets concatenated in retrieved
+order without headings, since bucketing is a retrieval design choice.
+`retrieve_pair(sample, cfg_a, cfg_b) -> Pair | None` builds the player's
+context and schedule, cutoff = `news_cutoff(schedule, week, as_of)`, and runs
+`news(..., fetched_before=as_of)` under both configs, so every session judges
+exactly the same items; None, with a printed reason, on a bye, no schedule, or
+a news error (the sample is skipped, and a rerun retries it). `Pair`: `sample`,
+`team`, `opponent`, `cutoff`, `a`, `b` (the flat lists), and `identical`
+(same doc_ids in the same order). `doc_ids(entries)`; `rebuild_pair(sample, a,
+b, cfg)` rebuilds a pair from recorded doc_ids via the news store and
+`news.news_entry`, recomputing team / opponent / cutoff from the schedule
+(None, with a reason, if an item is gone); `render_pair(pair, first)` is the
+header line (player, team, position, week, opponent, cutoff) then the FIRST
+and SECOND lists (no config names); `winner(choice,
+first)` maps first / second / tie back to a / b / tie; `check_seasons` (a
+sample season that differs from a config's raises).
+
+`evals/tui.py` is the terminal judging UI: `ask_human(pair, first, title,
+read_key)` prints `render_pair` and reads one key: ← first, → second, ↑ / ↓
+tie, `q` quit (other keys ignored); `read_key` reads arrows in cbreak mode.
 
 - `evals/generate.py` (`python -m evals.generate --week W [-n 30] [--seed 0]
   [--min-ppg 5.0] [--config path] -o samples.jsonl`): samples players, not
@@ -421,29 +496,55 @@ Variant configs are full `config.yaml` copies in `evals/configs/`
   `--min-ppg` are never drawn. `sample_players` draws `n` distinct players by
   weight without replacement (more than are eligible raises). Same seed, same
   samples.
-- `evals/compare.py` (`python -m evals.compare samples.jsonl -a A.yaml -b
-  B.yaml -o judgments.jsonl`): blind A/B of news retrieval, one judgment per
-  sample. `Comparison(cfg_a, cfg_b, a_label, b_label, read_key, now, rng).run(
-  samples, out_path)` builds each player's context and schedule, cutoff =
-  `news_cutoff(schedule, week, as_of)` (players on a bye or with no schedule
-  are skipped), and runs `news(..., fetched_before=as_of)` under both configs,
-  so every session, paused or resumed, judges exactly the same items. Identical selections in
-  every bucket are recorded as `identical` without asking. Otherwise A and B
-  go randomly to LEFT / RIGHT, both sides' player / team / opponent news are
-  printed (no config names on screen), and one keypress decides: ← left,
-  → right, ↑ / ↓ tie, `q` quit (other keys ignored). Each judgment is appended
-  as it's made; rerunning on the same output skips judged samples, and an
-  output file holding other configs' judgments is refused, as is a season
-  mismatch between samples and configs. At the end it prints the A wins, B
-  wins, ties, and identical counts with the config paths, then A's win rate
-  excluding ties and identicals with a Wilson 95% interval and a two-sided
-  exact sign test p-value (`evals/stats.py`: `wilson_interval`, `sign_test`;
-  stdlib only).
+- `evals/compare.py` (`python -m evals.compare samples.jsonl [--config base]
+  -a A.yaml -b B.yaml -o evals/runs/<name>`): blind human A/B of news
+  retrieval, one judgment per sample. `Comparison(cfg_a, cfg_b, meta,
+  read_key, rng).run(samples, run_dir)` runs `retrieve_pair`, records
+  identical pairs as a tie without asking, and otherwise picks which config
+  goes first at random, asks with `ask_human`, and records the winner. Each judgment is
+  appended as it's made; a rerun skips judged samples. At the end it prints
+  the A wins, B wins, ties, and identical counts with the config paths from
+  `meta.json`, then A's win rate excluding ties and identicals with a Wilson
+  95% interval and a two-sided exact sign test p-value (`evals/stats.py`:
+  `wilson_interval`, `sign_test`; stdlib only).
+- `evals/llm_judge.py` (`python -m evals.llm_judge samples.jsonl [--config
+  base] -a A.yaml -b B.yaml -o evals/runs/<name> [--sync] [--workers 8]`):
+  LLM-as-judge on the same pairs, judge model = the base config's
+  `llm.judge_model`, recorded in `meta.json`. `LLMJudge(cfg_a, cfg_b, meta,
+  client).run(samples, run_dir, sync, workers)`: identical pairs are recorded
+  as a tie without a call; every other pair is sent as two separate requests,
+  A first then B first, each the `render_pair` text with the `RUBRIC` as a cached
+  system block (which set better helps decide whether to start this player
+  this week: the player's own availability and role first, then
+  usage-changing teammate news and opposing-defense news, recency; penalize
+  irrelevant items, don't reward volume, tie when equal; reason in at most two
+  sentences, then the choice). Output schema `JudgeVerdict(reason, choice:
+  first / second / tie)`, `MAX_TOKENS = 1024` (thinking counts toward it).
+  Requests go through `client.query_batch` (job file `<run>/batch_id`) or,
+  with `--sync`, `client.query_many`. `combine` turns the two answers into
+  one `LLMJudgment` (above). A pair with a failed call isn't written, so the
+  next run retries it. Results are appended after the run; a rerun skips
+  recorded samples. The summary gives the A wins, B wins, ties (with how many
+  were inconsistent), identical, A's win rate excluding ties with Wilson CI
+  and sign test, and the **inconsistency rate** = inconsistent / judged pairs
+  (not identical) with its Wilson CI. `.env` is loaded for API credentials.
+- `evals/agreement.py` (`python -m evals.agreement evals/runs/<llm run> -n 20
+  [--config path]`): optional blind human check of the judge, written to the
+  run's `agreement.jsonl`; refuses a run without a `judge_model`.
+  `AgreementCheck(cfg, read_key, rng).run(run_dir, n)` loads the samples
+  named in `meta.json`, draws, at random, judged (not identical) LLM
+  judgments not yet checked, until the file holds `n`, so a rerun just
+  continues. Each pair is rebuilt exactly as the judge saw it from the
+  recorded doc_ids (`rebuild_pair`; skipped if an item is gone from the
+  store) and asked with `ask_human` with a random config first. The summary
+  gives the agreement rate (`human == llm`) with a Wilson CI and a human x
+  LLM table of a / b / tie. `--config` only supplies
+  `news_dir` and `max_summary_chars`.
 
 ## LLM usage
 
 Two LLM touch points, both via `client = get_llm_client(cfg.llm)` then
-`client.generate_structured(...)`
+`client.query(...)`
 (`clients/llm_client.py`; the Anthropic implementation uses
 `messages.parse()` + a Pydantic model, with no `temperature`). The
 prompts and output schemas live in the calling stage modules:
@@ -783,7 +884,7 @@ The **body is authoritative** (current state); the log is provenance.
 - 2026-11-17 — Every entry point (`python -m ffassistant`, `ffassistant.ingest`,
   `ffassistant.ingest.index`) takes `--config path` (default: the repo-root
   `config.yaml`); `__main__.py` parses its arguments with argparse.
-- 2026-11-17 — Blind A/B eval tooling in a top-level `evals/` package (imports
+- [superseded: variant configs are now override files] 2026-11-17 — Blind A/B eval tooling in a top-level `evals/` package (imports
   `ffassistant`, never imported by it). `evals.generate` builds a seeded prompt
   set without an LLM: `ACT` players on teams playing that week (no byes),
   weighted by PPR points per game before a fixed week, squared, with a
@@ -802,3 +903,52 @@ The **body is authoritative** (current state); the log is provenance.
   `Judgment` stores the cutoff and both sides' selected doc_ids per bucket.
 - 2026-11-17 — `evals.compare` reports A's win rate excluding ties with a
   Wilson 95% interval and a two-sided exact sign test p-value.
+- 2026-11-17 — `LLMClient.generate_structured` renamed `query`; added
+  `query_many` (concurrent) and `query_batch` (provider batch API, Message
+  Batches for Anthropic, resumable via a job file), both returning
+  `QueryError` per failed request instead of raising. `query` raises when the
+  reply has no parsed output.
+- 2026-11-17 — `load_config(path, overrides)` deep-merges override files over a
+  base config. The eval tools take a base `--config` and `-a` / `-b`
+  overrides; `evals/configs/*.yaml` are overrides now, not full copies.
+  `llm.judge_model` added (`claude-haiku-5-5`).
+- 2026-11-17 — LLM-as-judge (`evals.llm_judge`): each non-identical pair is
+  judged as two separate requests with the sides swapped, `reason` (at most
+  two sentences) + `choice` (left / right / tie), batch by default or
+  `--sync`. Orders that disagree are `inconsistent`, counted as ties; the
+  inconsistency rate is reported with a Wilson CI. Errored pairs are retried
+  on rerun.
+- 2026-11-17 — Agreement check (`evals.agreement`): Sid blind-judges a random
+  `n` of the LLM-judged pairs, rebuilt from the recorded doc_ids (no configs,
+  no seed; reruns continue toward `n`), and gets the agreement rate with a
+  Wilson CI and a human x LLM table.
+- 2026-11-17 — `LLMClient.query` takes a `QueryRequest`, the same request type
+  `query_many` / `query_batch` take, instead of five keyword arguments.
+- 2026-11-17 — Eval records trimmed to what isn't derivable: no sample `id`
+  (`gsis_id` keys judgments), no stored `winner` / `human` / `agree` (computed
+  with `winner(choice, first)`), no per-judgment config labels. Sides are
+  `first` / `second` (shown stacked, not left / right), in the records, the
+  rendered pair, the rubric, and the judge's schema; ← / → still pick first /
+  second.
+- 2026-11-17 — Each eval run is a directory (`-o`): `meta.json` (`RunMeta`:
+  `a_config`, `b_config`, `judge_model`) written once and checked on rerun,
+  `judgments.jsonl`, and for LLM runs `batch_id` and `agreement.jsonl`
+  (`evals.agreement` takes the run directory). Terminal UI split into
+  `evals/tui.py`, run storage into `evals/run_dirs.py`.
+- 2026-11-17 — Eval is decoupled from news buckets: each side is one flat
+  list of doc_ids (buckets concatenated in retrieved order, no headings), for
+  both what's recorded and what a judge sees. A news error skips the sample.
+- 2026-11-17 — Judgments are just outcomes: `Judgment` = `gsis_id`, `cutoff`,
+  `a`, `b`, `winner` (a / b / tie; identical = `a == b`, recorded as a tie);
+  `LLMJudgment(Judgment)` adds only `reason`, one record per pair (the agreed
+  winner, or tie with reason "inconsistent"; failed pairs aren't written);
+  `AgreementJudgment` = `gsis_id`, `human`, `llm`. `first` / `choice` /
+  `orders` / `verdict` / `Retrieved` removed. `RunMeta` gains `samples`.
+- 2026-11-17 — `evals/run_store.py` (was `run_dirs.py`) owns all eval file
+  paths behind `RunStore` (create / open, meta, samples, judgments,
+  agreements, batch_file) and `load_samples` / `write_samples`; tools never
+  name files. Shared CLI config handling moved to `evals/cli.py` and
+  `win_rate_line` to `stats.py`, so no tool imports another.
+- 2026-11-17 — `news_cutoff` and `target_week` (was `generate._target_week`)
+  moved from `answering/generate.py` to `answering/sources/schedule.py`, so
+  eval no longer imports the answer stage's entry module.

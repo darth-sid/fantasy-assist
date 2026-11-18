@@ -10,6 +10,7 @@ from pathlib import Path
 import polars as pl
 
 from evals.models import EvalSample
+from evals.run_store import write_samples
 from ffassistant.clients.nflreadpy_client import load_player_stats, load_schedules
 from ffassistant.config import CONFIG_PATH, load_config
 from ffassistant.resolution.roster import RosterPlayer, load_fantasy_roster
@@ -63,13 +64,12 @@ def sample_players(
     # Sorted so the same seed gives the same samples regardless of dict order.
     remaining = dict(sorted(weights.items()))
     samples = []
-    for i in range(n):
+    for _ in range(n):
         gsis_id = rng.choices(list(remaining), list(remaining.values()))[0]
         del remaining[gsis_id]
         player = roster[gsis_id]
         samples.append(
             EvalSample(
-                id=f"w{week}-{i:03d}",
                 season=season,
                 week=week,
                 as_of=as_of.isoformat(timespec="seconds"),
@@ -103,8 +103,7 @@ def main() -> None:
         roster, weights, cfg.season, args.week, args.n, args.seed, datetime.now(timezone.utc)
     )
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text("".join(s.model_dump_json() + "\n" for s in samples), encoding="utf-8")
+    write_samples(args.output, samples)
     print(f"wrote {len(samples)} samples to {args.output}")
 
 

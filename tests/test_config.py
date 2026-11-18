@@ -41,3 +41,22 @@ def test_missing_key_raises(tmp_path):
 def test_config_is_frozen():
     with pytest.raises(ValidationError):
         load_config().news.top_k = 1
+
+
+def test_override_deep_merges_nested_keys(tmp_path):
+    override = tmp_path / "override.yaml"
+    override.write_text("news:\n  ranker: recency\n")
+
+    cfg = load_config(CONFIG_PATH, [override])
+
+    assert cfg.news.ranker == "recency"
+    assert cfg.news.top_k == load_config().news.top_k
+    assert cfg.llm.judge_model == load_config().llm.judge_model
+
+
+def test_unknown_key_in_override_raises(tmp_path):
+    override = tmp_path / "override.yaml"
+    override.write_text("news:\n  rankr: recency\n")
+
+    with pytest.raises(ValidationError, match="rankr"):
+        load_config(CONFIG_PATH, [override])

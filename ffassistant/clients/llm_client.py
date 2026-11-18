@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 
 from pydantic import BaseModel
 
@@ -36,19 +38,51 @@ class StructuredResponse[T: BaseModel]:
     usage: TokenUsage
 
 
+@dataclass
+class QueryRequest[T: BaseModel]:
+    """One structured-output call: model, system blocks, one user message, and the output schema."""
+
+    model: str
+    system: list[SystemBlock]
+    user_content: str
+    output_model: type[T]
+    max_tokens: int
+
+
+@dataclass
+class QueryError:
+    """Why one query in a batch produced no parsed output."""
+
+    message: str
+
+
 class LLMClient(ABC):
     """A provider that can return structured output for one system + user message."""
 
     @abstractmethod
-    def generate_structured[T: BaseModel](
-        self,
-        model: str,
-        system: list[SystemBlock],
-        user_content: str,
-        output_model: type[T],
-        max_tokens: int,
-    ) -> StructuredResponse[T]:
-        """Sends one user message and returns the reply parsed into output_model."""
+    def query[T: BaseModel](self, request: QueryRequest[T]) -> StructuredResponse[T]:
+        """Sends one request and returns the reply parsed into its output_model."""
+
+    def query_many(
+        self, requests: list[QueryRequest], workers: int = 8
+    ) -> list[StructuredResponse | QueryError]:
+        """Runs queries concurrently; results in request order, failures as QueryError."""
+
+        def run(request: QueryRequest) -> StructuredResponse | QueryError:
+            try:
+                return self.query(request)
+            except Exception as exc:
+                return QueryError(f"{type(exc).__name__}: {exc}")
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            return list(pool.map(run, requests))
+
+    def query_batch(
+        self, requests: list[QueryRequest], job_file: Path | None = None
+    ) -> list[StructuredResponse | QueryError]:
+        """Like query_many, via the provider's batch API where it has one; blocks until done.
+        A provider that submits a job records its id in job_file and resumes it on rerun."""
+        return self.query_many(requests)
 
 
 def get_llm_client(llm: LLMConfig) -> LLMClient:

@@ -1,157 +1,125 @@
+import json
 import random
-from datetime import datetime, timezone
 
 import pytest
 
-import evals.compare as compare_module
-from evals.compare import Comparison, summary_lines, tally
-from evals.models import EvalSample
-from ffassistant.answering.models import ResolvedContext, SourceResult
-from ffassistant.answering.sources.news import NewsData, NewsEntry
+import evals.pairs as pairs_module
+from evals.compare import Comparison, summary_lines
+from evals.models import Judgment, RunMeta
+from ffassistant.answering.models import SourceResult
 from ffassistant.answering.sources.schedule import ScheduleData, ScheduleWeek
-from tests.helpers import CFG, with_news
+from tests.evals.helpers import CFG, CFG_B, NOW, SAMPLES, stub_retrieval
 
-NOW = datetime(2026, 11, 20, 12, 0, tzinfo=timezone.utc)
-CFG_B = with_news(ranker="recency")
-SAMPLES = [
-    EvalSample(id="w11-000", season=CFG.season, week=11, as_of=NOW.isoformat(), gsis_id="00-1", full_name="Joe Burrow", position="QB"),
-    EvalSample(id="w11-001", season=CFG.season, week=11, as_of=NOW.isoformat(), gsis_id="00-2", full_name="Ja'Marr Chase", position="WR"),
-]
+META = RunMeta(samples="s.jsonl", a_config="a.yaml", b_config="b.yaml")
 
 
-def _entry(doc_id: str) -> NewsEntry:
-    return NewsEntry(
-        doc_id=doc_id, source="espn", published_at="2026-11-18T15:00:00+00:00",
-        title=f"Title {doc_id}", summary="", url=f"https://x/{doc_id}",
-    )
-
-
-def _news_result(team_ids: list[str]) -> SourceResult[NewsData]:
-    data = NewsData(cutoff=NOW.isoformat(), player=[], team=[_entry(d) for d in team_ids], opponent=[])
-    return SourceResult(source="news", status="ok", as_of=NOW.isoformat(), data=data)
-
-
-def _stub(monkeypatch, team_ids_by_ranker: dict[str, list[str]]) -> None:
-    def fake_context(player, season, week, fmt):
-        return ResolvedContext(
-            player_id=player.player_id, player_name=player.full_name, team="CIN",
-            position=player.position, roster_status="ACT", season=season, week=week,
-            scoring_format=fmt,
-        )
-
-    target = ScheduleWeek(week=11, opponent="PIT", home=True, played=False, kickoff="2026-11-22T18:00:00+00:00")
-    sched = SourceResult(source="schedule", status="ok", as_of="Week 11", data=ScheduleData(team="CIN", weeks=[target]))
-    monkeypatch.setattr(compare_module, "player_context", fake_context)
-    monkeypatch.setattr(compare_module, "schedule", lambda ctx: sched)
-    def fake_news(ctx, opp, cutoff, cfg, fetched_before):
-        assert fetched_before == NOW
-        return _news_result(team_ids_by_ranker[cfg.news.ranker])
-
-    monkeypatch.setattr(compare_module, "news", fake_news)
-
-
-def _comparison(keys: list[str], seed: int = 0) -> Comparison:
+def _comparison(keys: list[str], seed: int = 0, meta: RunMeta = META) -> Comparison:
     presses = iter(keys)
-    return Comparison(CFG, CFG_B, "a.yaml", "b.yaml", read_key=lambda: next(presses), rng=random.Random(seed))
+    return Comparison(CFG, CFG_B, meta, read_key=lambda: next(presses), rng=random.Random(seed))
+
+
+def test_run_directory_holds_meta_once_and_judgments_without_configs(monkeypatch, tmp_path):
+    stub_retrieval(monkeypatch, {"bm25": ["a-item"], "recency": ["b-item"]})
+
+    _comparison(keys=["left", "up"]).run(SAMPLES, tmp_path / "run")
+
+    assert json.loads((tmp_path / "run" / "meta.json").read_text()) == {
+        "samples": "s.jsonl", "a_config": "a.yaml", "b_config": "b.yaml", "judge_model": None,
+    }
+    line = json.loads((tmp_path / "run" / "judgments.jsonl").read_text().splitlines()[0])
+    assert line == {
+        "gsis_id": "00-1", "cutoff": NOW.isoformat(timespec="seconds"),
+        "a": ["a-item"], "b": ["b-item"], "winner": line["winner"],
+    }
 
 
 def test_identical_retrievals_auto_tie_without_asking(monkeypatch, tmp_path):
-    _stub(monkeypatch, {"bm25": ["x"], "recency": ["x"]})
+    stub_retrieval(monkeypatch, {"bm25": ["x"], "recency": ["x"]})
 
-    judgments = _comparison(keys=[]).run(SAMPLES, tmp_path / "j.jsonl")
+    judgments = _comparison(keys=[]).run(SAMPLES, tmp_path / "run")
 
-    assert [(j.choice, j.winner, j.left) for j in judgments] == [("identical", "tie", None)] * 2
+    assert [(j.winner, j.identical) for j in judgments] == [("tie", True)] * 2
 
 
-def test_arrow_choice_maps_back_to_the_config_on_that_side(monkeypatch, tmp_path, capsys):
-    _stub(monkeypatch, {"bm25": ["a-item"], "recency": ["b-item"]})
+def test_arrows_pick_first_or_second_and_map_back_to_configs(monkeypatch, tmp_path, capsys):
+    stub_retrieval(monkeypatch, {"bm25": ["a-item"], "recency": ["b-item"]})
+    shown_first = random.Random(0).choice(["a", "b"])
 
-    judgments = _comparison(keys=["left", "down"]).run(SAMPLES, tmp_path / "j.jsonl")
+    first, second = _comparison(keys=["left", "down"]).run(SAMPLES, tmp_path / "run")
 
-    first, second = judgments
-    assert first.choice == "left" and first.winner == first.left
-    assert (second.choice, second.winner) == ("tie", "tie")
+    assert first.winner == shown_first
+    assert second.winner == "tie"
     out = capsys.readouterr().out
     assert "a.yaml" not in out and "bm25" not in out  # blind: no config names on screen
-    assert out.index("--- LEFT ---") < out.index("--- RIGHT ---")
+    assert out.index("--- FIRST ---") < out.index("--- SECOND ---")
+    assert "← first better" in out
 
 
 def test_unknown_keys_are_ignored(monkeypatch, tmp_path):
-    _stub(monkeypatch, {"bm25": ["a-item"], "recency": ["b-item"]})
+    stub_retrieval(monkeypatch, {"bm25": ["a-item"], "recency": ["b-item"]})
 
-    judgments = _comparison(keys=["x", "\n", "right", "up"]).run(SAMPLES, tmp_path / "j.jsonl")
+    judgments = _comparison(keys=["x", "\n", "right", "up"]).run(SAMPLES, tmp_path / "run")
 
-    assert [j.choice for j in judgments] == ["right", "tie"]
+    shown_first = random.Random(0).choice(["a", "b"])
+    assert [j.winner for j in judgments] == ["b" if shown_first == "a" else "a", "tie"]
 
 
 def test_quit_keeps_earlier_judgments_and_resume_skips_them(monkeypatch, tmp_path):
-    _stub(monkeypatch, {"bm25": ["a-item"], "recency": ["b-item"]})
-    out = tmp_path / "j.jsonl"
+    stub_retrieval(monkeypatch, {"bm25": ["a-item"], "recency": ["b-item"]})
+    run = tmp_path / "run"
 
-    assert len(_comparison(keys=["left", "q"]).run(SAMPLES, out)) == 1
+    assert len(_comparison(keys=["left", "q"]).run(SAMPLES, run)) == 1
 
-    judgments = _comparison(keys=["right"]).run(SAMPLES, out)
-    assert [j.sample_id for j in judgments] == ["w11-000", "w11-001"]
+    judgments = _comparison(keys=["right"]).run(SAMPLES, run)
+    assert [j.gsis_id for j in judgments] == ["00-1", "00-2"]
 
 
-def test_output_from_other_configs_is_refused(monkeypatch, tmp_path):
-    _stub(monkeypatch, {"bm25": ["x"], "recency": ["x"]})
-    out = tmp_path / "j.jsonl"
-    _comparison(keys=[]).run(SAMPLES, out)
+def test_run_of_other_configs_is_refused(monkeypatch, tmp_path):
+    stub_retrieval(monkeypatch, {"bm25": ["x"], "recency": ["x"]})
+    _comparison(keys=[]).run(SAMPLES, tmp_path / "run")
 
-    other = Comparison(CFG, CFG_B, "a.yaml", "c.yaml", read_key=lambda: "q")
-    with pytest.raises(ValueError, match="other configs"):
-        other.run(SAMPLES, out)
+    with pytest.raises(ValueError, match="new run directory"):
+        _comparison(keys=[], meta=META.model_copy(update={"b_config": "c.yaml"})).run(SAMPLES, tmp_path / "run")
 
 
 def test_season_mismatch_is_refused(tmp_path):
     with pytest.raises(ValueError, match="season"):
-        _comparison(keys=[]).run([SAMPLES[0].model_copy(update={"season": 1999})], tmp_path / "j.jsonl")
+        _comparison(keys=[]).run([SAMPLES[0].model_copy(update={"season": 1999})], tmp_path / "run")
 
 
 def test_bye_week_player_is_skipped(monkeypatch, tmp_path):
-    _stub(monkeypatch, {"bm25": ["x"], "recency": ["y"]})
+    stub_retrieval(monkeypatch, {"bm25": ["x"], "recency": ["y"]})
     bye = ScheduleWeek(week=11, opponent=None, home=None, played=False, kickoff=None)
     sched = SourceResult(source="schedule", status="ok", as_of="Week 11", data=ScheduleData(team="CIN", weeks=[bye]))
-    monkeypatch.setattr(compare_module, "schedule", lambda ctx: sched)
+    monkeypatch.setattr(pairs_module, "schedule", lambda ctx: sched)
 
-    assert _comparison(keys=[]).run(SAMPLES, tmp_path / "j.jsonl") == []
-
-
-def test_tally_counts_each_outcome(monkeypatch, tmp_path):
-    _stub(monkeypatch, {"bm25": ["a-item"], "recency": ["b-item"]})
-    judgments = _comparison(keys=["left", "up"]).run(SAMPLES, tmp_path / "j.jsonl")
-
-    counts = tally(judgments)
-
-    assert counts[judgments[0].left] == 1 and counts["tie"] == 1 and counts["identical"] == 0
+    assert _comparison(keys=[]).run(SAMPLES, tmp_path / "run") == []
 
 
 def test_judgment_records_the_cutoff_and_what_each_side_showed(monkeypatch, tmp_path):
-    _stub(monkeypatch, {"bm25": ["a-item"], "recency": ["b-item"]})
+    stub_retrieval(monkeypatch, {"bm25": ["a-item"], "recency": ["b-item"]})
 
-    first = _comparison(keys=["left", "up"]).run(SAMPLES, tmp_path / "j.jsonl")[0]
+    first = _comparison(keys=["left", "up"]).run(SAMPLES, tmp_path / "run")[0]
 
     # Kickoff is after as_of, so the cutoff is the sample's as_of.
     assert first.cutoff == NOW.isoformat(timespec="seconds")
-    assert (first.a.status, first.a.team, first.b.team) == ("ok", ["a-item"], ["b-item"])
+    assert (first.a, first.b) == (["a-item"], ["b-item"])
+
+
+def _judgment(winner, identical=False) -> Judgment:
+    return Judgment(gsis_id="x", cutoff="c", a=["1"], b=["1"] if identical else ["2"], winner=winner)
 
 
 def test_summary_reports_win_rate_interval_and_p_value():
-    def judgment(winner, choice):
-        empty = {"status": "ok"}
-        return compare_module.Judgment(
-            sample_id="s", a_config="a", b_config="b", cutoff="c", a=empty, b=empty,
-            left="a" if choice != "identical" else None, choice=choice, winner=winner,
-        )
+    judgments = (
+        [_judgment("a")] * 18 + [_judgment("b")] * 7 + [_judgment("tie"), _judgment("tie", identical=True)]
+    )
 
-    judgments = [judgment("a", "left")] * 18 + [judgment("b", "right")] * 7 + [judgment("tie", "tie")]
+    lines = summary_lines(judgments, META)
 
-    lines = summary_lines(judgments, "bm25.yaml", "recency.yaml")
-
-    assert "  A (bm25.yaml): 18 wins" in lines
+    assert "  A (a.yaml): 18 wins" in lines and "  identical (auto-tied): 1" in lines
     assert lines[-1] == "  A win rate excluding ties: 72% of 25 (95% CI 52% to 86%), sign test p = 0.043"
 
 
 def test_summary_without_decisive_judgments():
-    assert summary_lines([], "a", "b")[-1] == "  no decisive judgments yet"
+    assert summary_lines([], META)[-1] == "  no decisive judgments yet"

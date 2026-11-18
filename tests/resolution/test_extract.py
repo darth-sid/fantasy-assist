@@ -27,9 +27,12 @@ class FakeClient:
     def __init__(self, calls: dict):
         self.calls = calls
 
-    def generate_structured(self, model, system, user_content, output_model, max_tokens):
+    def query(self, request):
         self.calls.update(
-            model=model, system=system, user_content=user_content, output_model=output_model
+            model=request.model,
+            system=request.system,
+            user_content=request.user_content,
+            output_model=request.output_model,
         )
         return StructuredResponse(parsed=PARSED, usage=USAGE)
 

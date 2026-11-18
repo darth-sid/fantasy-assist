@@ -63,7 +63,6 @@ def test_samples_are_distinct_and_carry_the_week():
     samples = sample_players(ROSTER, {"a": 1.0, "b": 5.0, "c": 1.0}, 2026, 11, n=3, seed=1, as_of=AS_OF)
 
     assert sorted(s.gsis_id for s in samples) == ["a", "b", "c"]
-    assert [s.id for s in samples] == ["w11-000", "w11-001", "w11-002"]
     assert {(s.season, s.week, s.as_of) for s in samples} == {(2026, 11, "2026-11-17T09:00:00+00:00")}
     assert samples[0].full_name == ROSTER[samples[0].gsis_id].full_name
 
