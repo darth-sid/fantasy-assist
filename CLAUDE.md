@@ -53,8 +53,8 @@ request type for single and bulk calls. One abstract method,
 `query(request) -> StructuredResponse[T]` (raises when the reply has no
 parsed output, e.g. cut off at `max_tokens`), plus two for many requests at once, both returning
 results in request order with failures as `QueryError(message)` instead of
-raising: `query_many(requests, workers=8)` (concurrent `query` calls on a
-thread pool) and `query_batch(requests, job_file=None)` (the provider's
+raising: `query_many(requests, workers=8, progress=False)` (concurrent `query`
+calls on a thread pool; `progress` shows a tqdm bar as each finishes) and `query_batch(requests, job_file=None)` (the provider's
 batch API where it has one, blocking until done; defaults to `query_many`).
 The other neutral types it speaks: `SystemBlock`
 (`text`, `cache: bool`, a prompt-caching hint providers may ignore),
@@ -521,7 +521,7 @@ tie, `q` quit (other keys ignored); `read_key` reads arrows in cbreak mode.
   sentences, then the choice). Output schema `JudgeVerdict(reason, choice:
   first / second / tie)`, `MAX_TOKENS = 1024` (thinking counts toward it).
   Requests go through `client.query_batch` (job file `<run>/batch_id`) or,
-  with `--sync`, `client.query_many`. `combine` turns the two answers into
+  with `--sync`, `client.query_many(..., progress=True)`. `combine` turns the two answers into
   one `LLMJudgment` (above). A pair with a failed call isn't written, so the
   next run retries it. Results are appended after the run; a rerun skips
   recorded samples. The summary gives the A wins, B wins, ties (with how many

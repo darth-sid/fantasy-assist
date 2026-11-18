@@ -25,9 +25,10 @@ class FakeJudge(LLMClient):
             raise RuntimeError("judge down")
         return StructuredResponse(parsed=JudgeVerdict(reason="because", choice=choice), usage=None)
 
-    def query_many(self, requests, workers=8):
+    def query_many(self, requests, workers=8, progress=False):
         self.mode = self.mode or "sync"
         self.requests.extend(requests)
+        self.progress = progress
         return super().query_many(requests, workers)
 
     def query_batch(self, requests, job_file=None):
@@ -104,7 +105,7 @@ def test_batch_by_default_sync_on_request(monkeypatch, tmp_path):
     _, sync_client = _run(monkeypatch, tmp_path, prefers_a_item, sync=True, run="sync-run")
 
     assert batch_client.mode == "batch" and batch_client.job_file == tmp_path / "run" / "batch_id"
-    assert sync_client.mode == "sync"
+    assert sync_client.mode == "sync" and sync_client.progress
 
 
 def test_rerun_skips_judged_samples(monkeypatch, tmp_path):

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import BaseModel
+from tqdm import tqdm
 
 from ffassistant.config import LLMConfig
 
@@ -64,9 +65,10 @@ class LLMClient(ABC):
         """Sends one request and returns the reply parsed into its output_model."""
 
     def query_many(
-        self, requests: list[QueryRequest], workers: int = 8
+        self, requests: list[QueryRequest], workers: int = 8, progress: bool = False
     ) -> list[StructuredResponse | QueryError]:
-        """Runs queries concurrently; results in request order, failures as QueryError."""
+        """Runs queries concurrently; results in request order, failures as QueryError.
+        progress shows a bar that advances as each query finishes."""
 
         def run(request: QueryRequest) -> StructuredResponse | QueryError:
             try:
@@ -75,7 +77,10 @@ class LLMClient(ABC):
                 return QueryError(f"{type(exc).__name__}: {exc}")
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            return list(pool.map(run, requests))
+            futures = [pool.submit(run, request) for request in requests]
+            for _ in tqdm(as_completed(futures), total=len(futures), disable=not progress):
+                pass
+        return [future.result() for future in futures]
 
     def query_batch(
         self, requests: list[QueryRequest], job_file: Path | None = None

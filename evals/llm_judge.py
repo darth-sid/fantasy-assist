@@ -120,7 +120,7 @@ class LLMJudge:
         judge_model = self.meta.judge_model
         requests = [_request(pair, first, judge_model) for pair in to_judge for first in ("a", "b")]
         if sync:
-            responses = self.client.query_many(requests, workers)
+            responses = self.client.query_many(requests, workers, progress=True)
         else:
             responses = self.client.query_batch(requests, job_file=store.batch_file)
 
