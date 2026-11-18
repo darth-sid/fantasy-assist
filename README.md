@@ -141,7 +141,10 @@ python -m evals.compare evals/runs/w11.jsonl -a evals/configs/bm25.yaml -b evals
 
 For each player you see LEFT and RIGHT news and press ← or → for the better
 one, ↑ or ↓ for a tie, `q` to stop. Rerun the same command to pick up where you
-left off. The tally at the end says which config won. Variant configs are full
+left off: each sample set is frozen at the time it was generated, so news
+collected later never changes what you judge. The tally at the end gives the
+win counts and the win rate excluding ties with a 95% interval and a sign test
+p-value; each judgment line also records the doc_ids both sides showed. Variant configs are full
 copies of `config.yaml` in `evals/configs/`; `evals/runs/` is gitignored.
 
 ## Running the news collector

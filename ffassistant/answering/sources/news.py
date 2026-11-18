@@ -76,7 +76,11 @@ def _rank_bucket(
 
 
 def news(
-    ctx: ResolvedContext, opponent: str, cutoff: datetime, cfg: Config
+    ctx: ResolvedContext,
+    opponent: str,
+    cutoff: datetime,
+    cfg: Config,
+    fetched_before: datetime | None = None,
 ) -> SourceResult[NewsData]:
     source = "news"
     as_of = cutoff.isoformat(timespec="seconds")
@@ -89,7 +93,10 @@ def news(
             (
                 (item, tags[item.doc_id])
                 for item in iter_items(cfg.news_dir)
-                if item.doc_id in tags and window_start <= _published(item) < cutoff
+                if item.doc_id in tags
+                and window_start <= _published(item) < cutoff
+                # Pins the corpus to what had been collected by then, e.g. for repeatable evals.
+                and (fetched_before is None or datetime.fromisoformat(item.fetched_at) < fetched_before)
             ),
             key=lambda pair: _published(pair[0]),
             reverse=True,

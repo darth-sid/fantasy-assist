@@ -295,3 +295,20 @@ def test_bm25_index_is_built_once_per_call(monkeypatch):
 
     assert len(built) == 1
     assert (_team_ids(result), [e.doc_id for e in result.data.opponent]) == (["t"], ["o"])
+
+
+def test_fetched_before_freezes_the_corpus(monkeypatch):
+    published = CUTOFF - timedelta(days=2)
+    early = _item("early", published=published)
+    late = _item("late", published=published).model_copy(
+        update={"fetched_at": (CUTOFF - timedelta(hours=1)).isoformat(timespec="seconds")}
+    )
+    items, tags = [early, late], [_tags("early", player_ids=["00-1"]), _tags("late", player_ids=["00-1"])]
+    monkeypatch.setattr(news_module, "iter_items", lambda news_dir: iter(items))
+    monkeypatch.setattr(news_module, "iter_tags", lambda news_dir: iter(tags))
+
+    frozen = news(CTX, "ARI", CUTOFF, CFG, fetched_before=CUTOFF - timedelta(days=1))
+    unfrozen = news(CTX, "ARI", CUTOFF, CFG)
+
+    assert [e.doc_id for e in frozen.data.player] == ["early"]
+    assert {e.doc_id for e in unfrozen.data.player} == {"early", "late"}

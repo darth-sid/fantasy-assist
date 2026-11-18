@@ -1,8 +1,12 @@
+from datetime import datetime, timezone
+
 import polars as pl
 import pytest
 
 from evals.generate import player_weights, sample_players, teams_playing
 from ffassistant.resolution.roster import RosterPlayer
+
+AS_OF = datetime(2026, 11, 17, 9, 0, tzinfo=timezone.utc)
 
 
 def _player(gsis_id: str, status: str = "ACT", team: str = "KC") -> RosterPlayer:
@@ -47,29 +51,29 @@ def test_teams_playing_leaves_out_bye_teams():
 def test_same_seed_same_samples():
     weights = {"a": 1.0, "b": 2.0, "c": 3.0}
 
-    first = sample_players(ROSTER, weights, 2026, 11, n=3, seed=7)
+    first = sample_players(ROSTER, weights, 2026, 11, n=3, seed=7, as_of=AS_OF)
 
-    assert first == sample_players(ROSTER, weights, 2026, 11, n=3, seed=7)
+    assert first == sample_players(ROSTER, weights, 2026, 11, n=3, seed=7, as_of=AS_OF)
     assert [s.gsis_id for s in first] != [
-        s.gsis_id for s in sample_players(ROSTER, weights, 2026, 11, n=3, seed=8)
+        s.gsis_id for s in sample_players(ROSTER, weights, 2026, 11, n=3, seed=8, as_of=AS_OF)
     ]
 
 
 def test_samples_are_distinct_and_carry_the_week():
-    samples = sample_players(ROSTER, {"a": 1.0, "b": 5.0, "c": 1.0}, 2026, 11, n=3, seed=1)
+    samples = sample_players(ROSTER, {"a": 1.0, "b": 5.0, "c": 1.0}, 2026, 11, n=3, seed=1, as_of=AS_OF)
 
     assert sorted(s.gsis_id for s in samples) == ["a", "b", "c"]
     assert [s.id for s in samples] == ["w11-000", "w11-001", "w11-002"]
-    assert {(s.season, s.week) for s in samples} == {(2026, 11)}
+    assert {(s.season, s.week, s.as_of) for s in samples} == {(2026, 11, "2026-11-17T09:00:00+00:00")}
     assert samples[0].full_name == ROSTER[samples[0].gsis_id].full_name
 
 
 def test_unweighted_players_are_never_drawn():
-    samples = sample_players(ROSTER, {"a": 1.0, "b": 1.0}, 2026, 11, n=2, seed=3)
+    samples = sample_players(ROSTER, {"a": 1.0, "b": 1.0}, 2026, 11, n=2, seed=3, as_of=AS_OF)
 
     assert {s.gsis_id for s in samples} == {"a", "b"}
 
 
 def test_more_samples_than_eligible_players_raises():
     with pytest.raises(ValueError, match="only 1"):
-        sample_players(ROSTER, {"a": 1.0}, 2026, 11, n=2, seed=0)
+        sample_players(ROSTER, {"a": 1.0}, 2026, 11, n=2, seed=0, as_of=AS_OF)

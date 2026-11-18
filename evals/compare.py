@@ -14,7 +14,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from evals.models import EvalSample, Judgment
+from evals.models import EvalSample, Judgment, Retrieved
+from evals.stats import sign_test, wilson_interval
 from ffassistant.answering.generate import news_cutoff
 from ffassistant.answering.models import SourceResult
 from ffassistant.answering.player_context import player_context
@@ -40,11 +41,14 @@ def read_key() -> str:
     return _ARROWS.get(data, data.decode(errors="ignore"))
 
 
-def _selection(result: SourceResult[NewsData]) -> tuple:
+def _retrieved(result: SourceResult[NewsData]) -> Retrieved:
     if result.status != "ok":
-        return (result.status, result.error)
+        return Retrieved(status=result.status, error=result.error)
+    ids = lambda bucket: [entry.doc_id for entry in bucket]
     data = result.data
-    return tuple(tuple(e.doc_id for e in bucket) for bucket in (data.player, data.team, data.opponent))
+    return Retrieved(
+        status="ok", player=ids(data.player), team=ids(data.team), opponent=ids(data.opponent)
+    )
 
 
 def _entry_line(entry: NewsEntry) -> str:
@@ -76,6 +80,27 @@ def _load_judgments(path: Path) -> list[Judgment]:
     return [Judgment.model_validate_json(line) for line in lines if line.strip()]
 
 
+def summary_lines(judgments: list[Judgment], a_label: str, b_label: str) -> list[str]:
+    """Win counts, then A's win rate excluding ties with a Wilson 95% CI and sign test p."""
+    counts = tally(judgments)
+    a, b = counts["a"], counts["b"]
+    lines = [
+        f"Results ({len(judgments)} judgments):",
+        f"  A ({a_label}): {a} wins",
+        f"  B ({b_label}): {b} wins",
+        f"  ties: {counts['tie']}",
+        f"  identical (auto-tied): {counts['identical']}",
+    ]
+    if a + b == 0:
+        return [*lines, "  no decisive judgments yet"]
+    low, high = wilson_interval(a, a + b)
+    return [
+        *lines,
+        f"  A win rate excluding ties: {a / (a + b):.0%} of {a + b} "
+        f"(95% CI {low:.0%} to {high:.0%}), sign test p = {sign_test(a, b):.3f}",
+    ]
+
+
 def tally(judgments: list[Judgment]) -> Counter:
     """Counts wins per config, judged ties, and identical (auto) ties."""
     return Counter(
@@ -85,14 +110,13 @@ def tally(judgments: list[Judgment]) -> Counter:
 
 @dataclass
 class Comparison:
-    """Two configs to compare blind, plus the keypress source, clock, and side shuffler."""
+    """Two configs to compare blind, plus the keypress source and side shuffler."""
 
     cfg_a: Config
     cfg_b: Config
     a_label: str
     b_label: str
     read_key: Callable[[], str] = read_key
-    now: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     rng: random.Random = field(default_factory=random.Random)
 
     def run(self, samples: list[EvalSample], out_path: Path) -> list[Judgment]:
@@ -130,18 +154,26 @@ class Comparison:
         )
         ctx = player_context(valid, sample.season, sample.week, self.cfg_a.default_scoring_format)
         sched = schedule(ctx)
-        cutoff = news_cutoff(sched, sample.week, self.now)
+        as_of = datetime.fromisoformat(sample.as_of)
+        cutoff = news_cutoff(sched, sample.week, as_of)
         if cutoff is None:
             print(f"skipped {sample.full_name} ({sample.id}): bye or schedule unavailable")
             return None
         opponent = next(w.opponent for w in sched.data.weeks if w.week == sample.week)
         results = {
-            "a": news(ctx, opponent, cutoff, self.cfg_a),
-            "b": news(ctx, opponent, cutoff, self.cfg_b),
+            "a": news(ctx, opponent, cutoff, self.cfg_a, fetched_before=as_of),
+            "b": news(ctx, opponent, cutoff, self.cfg_b, fetched_before=as_of),
         }
 
-        record = dict(sample_id=sample.id, a_config=self.a_label, b_config=self.b_label)
-        if _selection(results["a"]) == _selection(results["b"]):
+        record = dict(
+            sample_id=sample.id,
+            a_config=self.a_label,
+            b_config=self.b_label,
+            cutoff=cutoff.isoformat(timespec="seconds"),
+            a=_retrieved(results["a"]),
+            b=_retrieved(results["b"]),
+        )
+        if record["a"] == record["b"]:
             return Judgment(**record, left=None, choice="identical", winner="tie")
 
         left = self.rng.choice(["a", "b"])
@@ -181,13 +213,8 @@ def main() -> None:
     comparison = Comparison(load_config(args.a), load_config(args.b), str(args.a), str(args.b))
     judgments = comparison.run(samples, args.output)
 
-    counts = tally(judgments)
     print()
-    print(f"Results ({len(judgments)} judgments in {args.output}):")
-    print(f"  A ({args.a}): {counts['a']} wins")
-    print(f"  B ({args.b}): {counts['b']} wins")
-    print(f"  ties: {counts['tie']}")
-    print(f"  identical (auto-tied): {counts['identical']}")
+    print("\n".join(summary_lines(judgments, str(args.a), str(args.b))))
 
 
 if __name__ == "__main__":

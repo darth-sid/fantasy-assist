@@ -301,9 +301,11 @@ the `SourceResult` envelope (`source`, `status`, `as_of`, `data`, `error`).
 - `news.py` (`NewsData`: `cutoff`, `player`, `team`, `opponent`, each a
   `list[NewsEntry]`; `NewsEntry`: `doc_id`, `source`, `published_at`, `title`,
   `summary`, `url`, `score` (the ranker's score, None for the player bucket;
-  never rendered into the context)): `news(ctx, opponent, cutoff, cfg)`, the one
-  source that takes extra arguments (the target-week opponent, the cutoff, and
-  the config).
+  never rendered into the context)): `news(ctx, opponent, cutoff, cfg,
+  fetched_before=None)`, the one source that takes extra arguments (the
+  target-week opponent, the cutoff, the config, and an optional
+  `fetched_before` that also drops items with `fetched_at >= fetched_before`,
+  freezing the corpus at a point in time; the answer path never sets it).
   Retrieval over the ingest-time tags; team scoping is the only filter. Joins `iter_items()` with `iter_tags()` on `doc_id` (items
   with no tags row are skipped) and keeps items with `cutoff -
   news.lookback_days <= published_at < cutoff`, newest first. Each item lands in
@@ -399,8 +401,12 @@ Working mode: **Build** — Sid designs, Claude implements to spec.
 `evals/` is a top-level package beside `ffassistant/` for offline evaluation
 (`python -m evals.<tool>`). It may import anything in `ffassistant`;
 `ffassistant` never imports `evals`. Records live in `evals/models.py`
-(`EvalSample`: `id`, `season`, `week`, `gsis_id`, `full_name`, `position`,
-one player for one week; `Judgment`: `sample_id`, `a_config`, `b_config`, `left` (`a` / `b`, None when identical), `choice`
+(`EvalSample`: `id`, `season`, `week`, `as_of` (generation time, ISO 8601
+UTC), `gsis_id`, `full_name`, `position`, one player for one week;
+`Judgment`: `sample_id`, `a_config`, `b_config`, `cutoff`, `a` / `b`
+(`Retrieved`: `status`, `error`, and the selected `player` / `team` /
+`opponent` doc_ids, so judgments stay inspectable if the local corpus
+changes), `left` (`a` / `b`, None when identical), `choice`
 (`left` / `right` / `tie` / `identical`), `winner` (`a` / `b` / `tie`)).
 Variant configs are full `config.yaml` copies in `evals/configs/`
 (`bm25.yaml`, `recency.yaml`); generated files go in gitignored
@@ -419,8 +425,9 @@ Variant configs are full `config.yaml` copies in `evals/configs/`
   B.yaml -o judgments.jsonl`): blind A/B of news retrieval, one judgment per
   sample. `Comparison(cfg_a, cfg_b, a_label, b_label, read_key, now, rng).run(
   samples, out_path)` builds each player's context and schedule, cutoff =
-  `news_cutoff(schedule, week, now)` (players on a bye or with no schedule are
-  skipped), and runs `news()` under both configs. Identical selections in
+  `news_cutoff(schedule, week, as_of)` (players on a bye or with no schedule
+  are skipped), and runs `news(..., fetched_before=as_of)` under both configs,
+  so every session, paused or resumed, judges exactly the same items. Identical selections in
   every bucket are recorded as `identical` without asking. Otherwise A and B
   go randomly to LEFT / RIGHT, both sides' player / team / opponent news are
   printed (no config names on screen), and one keypress decides: ← left,
@@ -428,7 +435,10 @@ Variant configs are full `config.yaml` copies in `evals/configs/`
   as it's made; rerunning on the same output skips judged samples, and an
   output file holding other configs' judgments is refused, as is a season
   mismatch between samples and configs. At the end it prints the A wins, B
-  wins, ties, and identical counts with the config paths.
+  wins, ties, and identical counts with the config paths, then A's win rate
+  excluding ties and identicals with a Wilson 95% interval and a two-sided
+  exact sign test p-value (`evals/stats.py`: `wilson_interval`, `sign_test`;
+  stdlib only).
 
 ## LLM usage
 
@@ -786,3 +796,9 @@ The **body is authoritative** (current state); the log is provenance.
   keeping text for. `n` distinct players per week (`EvalSample`), weighted
   without replacement; `Judgment` keys on `sample_id`. Supersedes the prompt
   templates in the earlier evals entry.
+- 2026-11-17 — Eval runs are frozen and inspectable: each `EvalSample` stores
+  its generation time `as_of`, used as both the news cutoff's `now` and a new
+  optional `news(..., fetched_before=)` filter on `fetched_at`; each
+  `Judgment` stores the cutoff and both sides' selected doc_ids per bucket.
+- 2026-11-17 — `evals.compare` reports A's win rate excluding ties with a
+  Wilson 95% interval and a two-sided exact sign test p-value.

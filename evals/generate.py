@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import random
+from datetime import datetime, timezone
 from pathlib import Path
 
 import polars as pl
@@ -53,6 +54,7 @@ def sample_players(
     week: int,
     n: int,
     seed: int,
+    as_of: datetime,
 ) -> list[EvalSample]:
     """n distinct players drawn by weight, without replacement."""
     if n > len(weights):
@@ -70,6 +72,7 @@ def sample_players(
                 id=f"w{week}-{i:03d}",
                 season=season,
                 week=week,
+                as_of=as_of.isoformat(timespec="seconds"),
                 gsis_id=gsis_id,
                 full_name=player.full_name,
                 position=player.position,
@@ -96,7 +99,9 @@ def main() -> None:
     weights = player_weights(
         roster, load_player_stats(cfg.season), args.week, playing, args.min_ppg
     )
-    samples = sample_players(roster, weights, cfg.season, args.week, args.n, args.seed)
+    samples = sample_players(
+        roster, weights, cfg.season, args.week, args.n, args.seed, datetime.now(timezone.utc)
+    )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text("".join(s.model_dump_json() + "\n" for s in samples), encoding="utf-8")
